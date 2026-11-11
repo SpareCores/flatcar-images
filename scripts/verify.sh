@@ -7,7 +7,8 @@
 # DIR holds SHA256SUMS and the downloaded files, each with its
 # <file>.sigstore.json. Only files that are present are checked, but
 # SHA256SUMS itself must verify.
-# Needs cosign 2.x or later (cosign verify-blob --bundle). Set
+# Needs cosign v3 or later (the bundles are in the new Sigstore bundle
+# format; cosign 2.5 and 2.6 need --new-bundle-format). Set
 # VERIFY_SKIP_SIGNATURES=1 to check the sums only.
 #
 # Env: CERT_IDENTITY_REGEXP (default: the build workflow of this repository on

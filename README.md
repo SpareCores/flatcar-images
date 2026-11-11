@@ -52,11 +52,11 @@ Each release has `manifest.json`, which maps the pinned Flatcar version to its a
 
 `source_image` is the official `flatcar_production_image.bin.bz2` the artifact was made from, with the SHA512 Flatcar signed. The artifact URL is stable: `https://github.com/SpareCores/flatcar-images/releases/download/<channel>-<version>/<artifact>`.
 
-Name the image you create in your account so that a pinned version maps to exactly one image (the conventions SCarpenter reads): UpCloud template labels `flatcar-channel`, `flatcar-version`, `flatcar-arch`; Vultr snapshot description `flatcar-<channel>-<version>-<arch>`; Alibaba image name `Flatcar-<channel>-<version>-<arch>`. See the SCarpenter documentation for the full contract.
+Name the image you create in your account so that a pinned version maps to exactly one image (the conventions SCarpenter reads): UpCloud template labels `scarpenter-image=flatcar`, `flatcar-channel`, `flatcar-version`, `flatcar-arch`, `flatcar-tier` and title `flatcar-<channel>-<version>-amd64-<tier>`; Vultr snapshot description `flatcar-<channel>-<version>-<arch>`; Alibaba image name `Flatcar-<channel>-<version>-<arch>` with tags `flatcar-channel`, `flatcar-version`, `arch`, `built-by`. See the SCarpenter documentation for the full contract.
 
 ## Verify a release
 
-Every file, `SHA256SUMS` and `manifest.json` have a keyless [Sigstore](https://www.sigstore.dev/) bundle (`<file>.sigstore.json`), signed by this repository's `build` workflow through GitHub's OIDC identity. No key to fetch; you need [cosign](https://github.com/sigstore/cosign) 2.x or later. Download the files you want, `SHA256SUMS` and the `.sigstore.json` bundles into one directory, then:
+Every file, `SHA256SUMS` and `manifest.json` have a keyless [Sigstore](https://www.sigstore.dev/) bundle (`<file>.sigstore.json`), signed by this repository's `build` workflow through GitHub's OIDC identity. No key to fetch; you need [cosign](https://github.com/sigstore/cosign) v3 or later (the bundles are in the Sigstore bundle format that cosign v3 writes; cosign 2.5 and 2.6 read them only with `--new-bundle-format`). The certificate identity is the `build` workflow on `main` and the issuer is GitHub Actions; `build.yml` refuses to release from any other ref. Download the files you want, `SHA256SUMS` and the `.sigstore.json` bundles into one directory, then:
 
 ```sh
 scripts/verify.sh ./download-dir
@@ -122,7 +122,7 @@ config/channels.json     channels built automatically
 
 Patching needs no root. The OEM partition (GPT name `OEM`, partition 6) is cut out of the disk with `dd` using offsets from `sfdisk --json` and copied back with `dd conv=notrunc`. In current Flatcar it is btrfs, for which no user-space writer exists: its files are extracted with `btrfs restore` and the filesystem is recreated with `mkfs.btrfs --rootdir` at the same size, with the same label, UUID, node size, mixed block groups and block group tree, under `fakeroot` so every file is owned by root. ext4 (`debugfs`) and FAT (mtools) are handled too. Loop mounts and guestfish would need root or a FUSE/libguestfs appliance; this runs identically on GitHub-hosted runners and a laptop. The script digests everything outside the partition before and after, checks the filesystem (`btrfs check`, `e2fsck`), checks that `grub.cfg` is root-owned with mode 0644, and reads it back.
 
-GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads each tracked channel's `version.txt` from the Flatcar release server, dispatches `build.yml` for versions without a release), `build.yml` (build matrix, then a `sign` job with `id-token: write`, then a `release` job, the only one with `contents: write`; a failed build opens an issue). Actions are pinned by commit SHA, no secrets are used.
+GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads each tracked channel's `version.txt` from the Flatcar release server, dispatches `build.yml` for versions without a release), `build.yml` (build matrix, then a `sign` job with `id-token: write`, then a `release` job, the only one with `contents: write`; a failed build opens one issue per version, and later failures of the same version, such as the next day's retry by `track-releases.yml`, comment on it). Actions are pinned by commit SHA, no secrets are used.
 
 ## Develop
 

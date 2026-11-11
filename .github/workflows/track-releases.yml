@@ -22,7 +22,6 @@ jobs:
       actions: write # gh workflow run
     env:
       GH_TOKEN: ${{ github.token }}
-      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,7 +30,9 @@ jobs:
         run: |
           missing=$(scripts/track.sh)
           if [[ -z $missing ]]; then echo "nothing to build"; exit 0; fi
+          # build.yml releases only from main (the signing identity), and a
+          # schedule event carries no repository default branch.
           while read -r channel version; do
             echo "dispatching $channel $version"
-            gh workflow run build.yml --ref "$DEFAULT_BRANCH" -f "channel=$channel" -f "version=$version"
+            gh workflow run build.yml --ref main -f "channel=$channel" -f "version=$version"
           done <<<"$missing"

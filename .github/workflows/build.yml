@@ -55,6 +55,9 @@ jobs:
       - id: plan
         run: |
           source scripts/lib.sh
+          # Releases are signed with this workflow's identity on main (README,
+          # "Verify a release"); a run from another ref would not verify.
+          [[ $GITHUB_REF == refs/heads/main ]] || die "build.yml releases only from main, not $GITHUB_REF"
           valid_channel "$CHANNEL"; valid_version "$VERSION"
           [[ $REVISION =~ ^(r[0-9]+)?$ ]] || die "invalid revision: $REVISION"
           tag=$(release_tag "$CHANNEL" "$VERSION" "$REVISION")
@@ -178,8 +181,15 @@ jobs:
       VERSION: ${{ inputs.version }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Open an issue
+      - name: Open an issue, or comment on the open one
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Build failed: Flatcar $CHANNEL $VERSION" \
-            --body "The build of $CHANNEL $VERSION failed: $RUN_URL. Nothing is retried automatically; fix the cause and dispatch the build again."
+          title="Build failed: Flatcar $CHANNEL $VERSION"
+          body="The build of $CHANNEL $VERSION failed: $RUN_URL. track-releases dispatches the build again every day until a release exists; fix the cause, then close this issue."
+          # One open issue per version: a daily retry that fails again comments.
+          num=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title |
+            jq -r --arg t "$title" 'map(select(.title == $t))[0].number // empty')
+          if [[ -n $num ]]; then
+            gh issue comment "$num" --repo "$GITHUB_REPOSITORY" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
