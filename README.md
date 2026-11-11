@@ -106,7 +106,7 @@ Flatcar publishes no GCE arm64 image. This repository builds the `tar.gz` and, w
 
 It is idempotent: an image that exists is not created again (its sharing is still ensured), a `FAILED` one from a half-run is deleted and recreated, a `PENDING` one is waited for. Runs are serialised by a concurrency group, and a rate-limit error (one image creation per 10 minutes) is retried with backoff. While the variables are unset the workflow ends with a notice and succeeds. `scripts/publish-gcp.sh --dry-run CHANNEL VERSION` prints the commands and runs nothing; the tests run it against a stub `gcloud`.
 
-Owner setup (project, bucket, least-privilege service account, workload identity restricted to this repository, `main` and the workflow file, the five variables): [docs/gcp-setup.md](docs/gcp-setup.md), with `scripts/setup-gcp.sh` to print or apply it.
+What the workflow expects to exist in the GCP project (managed in Spare Cores' own infrastructure code): [docs/gcp-setup.md](docs/gcp-setup.md).
 
 Open (**unverified**): whether `gce` is the right OEM id for Ignition's `gcp` platform on arm64, the serial console arguments, and that the image boots at all. There is no arm64 `oem-gce` sysext, so no guest agent, no OS Login and no `/dev/disk/by-id/google-*` udev rules.
 
@@ -122,7 +122,6 @@ scripts/matrix.sh        build matrix of a channel; UpCloud skips LTS
 scripts/track.sh         tracked releases without a GitHub release
 scripts/verify.sh        what a consumer runs
 scripts/publish-gcp.sh   create and share the GCE arm64 image from a release
-scripts/setup-gcp.sh     print or apply the owner's one-time GCP setup
 config/platforms.json    per vendor: OEM id, architectures, formats, skipped channels
 config/channels.json     channels built automatically
 ```
