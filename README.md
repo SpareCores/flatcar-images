@@ -1,0 +1,143 @@
+# flatcar-images
+
+[Flatcar Container Linux](https://www.flatcar.org/) images for the cloud vendors that have no official Flatcar image, built from Flatcar's own release files and published as signed GitHub releases.
+
+A generic Flatcar image has no OEM id: on a vendor without an official image it runs Ignition as `qemu` (fw_cfg) and boots unconfigured. The only thing that differs between an official OEM image and a generic one is one file on the OEM partition, `grub.cfg` with `set oem_id="<id>"`. This repository downloads the official generic image, verifies it, writes that one file, and repackages the disk in the format each vendor imports. Nothing else in the image changes (the build checks that everything outside the OEM partition is byte-identical to Flatcar's image).
+
+It is part of how [SpareCores/scarpenter](https://github.com/SpareCores/scarpenter) finds a boot image per vendor, and anyone else can use the releases the same way. It holds no cloud credentials and never boots an image on a vendor.
+
+## The image ladder
+
+Where a node's image comes from, in order of preference:
+
+1. A public Flatcar image the vendor offers. Use it; this repository is not needed.
+2. The vendor lets anyone publish public images: Spare Cores publishes them there (planned for GCP arm64 and, later, Alibaba community images).
+3. Images are created in your own account from the artifacts of this repository, with your infrastructure as code. This is the rung for UpCloud, Vultr and Alibaba today.
+4. The controller imports the image itself: not used.
+
+When Flatcar ships an official image for a platform, this repository stops building it from the release that carries it and points to the official file. Versions already built stay available.
+
+## What is built
+
+| Vendor | OEM id | Arch | Artifacts per release | Channels |
+|---|---|---|---|---|
+| UpCloud | `upcloud` | amd64 | `flatcar-upcloud-<channel>-<version>-amd64.img.gz` (raw, gzip) | stable, beta, alpha. **Not LTS**: the LTS release ships an Ignition without the `upcloud` platform (needs 2.23 or later). |
+| Vultr | `vultr` | amd64 | `flatcar-vultr-<channel>-<version>-amd64.img.gz` (raw, gzip) | all |
+| Alibaba Cloud | `aliyun` | amd64, arm64 | `flatcar-aliyun-<channel>-<version>-<arch>.qcow2` (compressed) and `.img.gz` (raw, gzip) | all |
+| Google Cloud | `gce` | arm64 | `flatcar-gce-<channel>-<version>-arm64.tar.gz` (one sparse `disk.raw`, whole GiB, `oldgnu` tar) | all |
+
+Stable and LTS are built automatically when Flatcar releases them (a daily check, see below). Beta and alpha are built on request: run the `build` workflow by hand, or set `"track": true` in `config/channels.json`.
+
+One release per Flatcar version, tag `<channel>-<version>` (for example `stable-4757.2.3`). A version is never rebuilt over an existing release, so an image someone created from an artifact always matches its checksum; a fix is a new release with a suffix (`stable-4757.2.3-r2`). Releases are not deleted.
+
+Raw images (about 9 GiB) do not fit a release asset (2 GiB), so only compressed artifacts are released. `make build ... ALL_FORMATS=1` also builds the raw Vultr image for hosting elsewhere.
+
+## Use the releases
+
+Each release has `manifest.json`, which maps the pinned Flatcar version to its artifacts:
+
+```json
+{
+  "schema": 1, "repository": "SpareCores/flatcar-images",
+  "tag": "stable-4757.2.3", "channel": "stable", "version": "4757.2.3",
+  "artifacts": [{
+    "name": "flatcar-vultr-stable-4757.2.3-amd64.img.gz",
+    "vendor": "vultr", "oem_id": "vultr", "arch": "amd64",
+    "format": "raw-gzip", "size": 0, "sha256": "...",
+    "url": "https://github.com/SpareCores/flatcar-images/releases/download/stable-4757.2.3/flatcar-vultr-stable-4757.2.3-amd64.img.gz",
+    "source_image": { "url": "...", "sha512": "...", "sha256": "...", "signed_by": "F88CFEDE..." }
+  }]
+}
+```
+
+`source_image` is the official `flatcar_production_image.bin.bz2` the artifact was made from, with the SHA512 Flatcar signed. The artifact URL is stable: `https://github.com/SpareCores/flatcar-images/releases/download/<channel>-<version>/<artifact>`.
+
+Name the image you create in your account so that a pinned version maps to exactly one image (the conventions SCarpenter reads): UpCloud template labels `flatcar-channel`, `flatcar-version`, `flatcar-arch`; Vultr snapshot description `flatcar-<channel>-<version>-<arch>`; Alibaba image name `Flatcar-<channel>-<version>-<arch>`. See the SCarpenter documentation for the full contract.
+
+## Verify a release
+
+Every file, `SHA256SUMS` and `manifest.json` have a keyless [Sigstore](https://www.sigstore.dev/) bundle (`<file>.sigstore.json`), signed by this repository's `build` workflow through GitHub's OIDC identity. No key to fetch; you need [cosign](https://github.com/sigstore/cosign) 2.x or later. Download the files you want, `SHA256SUMS` and the `.sigstore.json` bundles into one directory, then:
+
+```sh
+scripts/verify.sh ./download-dir
+```
+
+or by hand:
+
+```sh
+cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/SpareCores/flatcar-images/\.github/workflows/build\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+The same checksums also have a GitHub build provenance attestation: `gh attestation verify <file> --repo SpareCores/flatcar-images`.
+
+The build itself verifies Flatcar's `.DIGESTS.asc` against Flatcar's image signing key, pinned by fingerprint (`F88CFEDEFF29A5B4D9523864E25D9AED0593B34A`, key in `keys/`), and takes the SHA512 from the signed text.
+
+## Import per vendor
+
+None of this is automated here; it is what your infrastructure as code does once per pinned version. All of it is **unverified live**: no image from this repository has been booted on a vendor yet.
+
+- **UpCloud**: create a storage from the artifact with `http_import` (UpCloud accepts raw, gzip and xz; not qcow2 or bz2), then templatize. Console and `direct_upload` work too. Whether UpCloud accepts the content type GitHub serves release assets with is open.
+- **Vultr**: `POST /v2/snapshots/create-from-url` with the artifact URL, description `flatcar-<channel>-<version>-<arch>`. Whether Vultr accepts a gzip file or needs a raw one (which needs hosting outside GitHub releases) is open.
+- **Alibaba Cloud**: upload the artifact to OSS in one region and `ImportImage` (RAW, QCOW2 and VHD are accepted, bz2 is not; the plan prefers the compressed qcow2, gunzip the `.img.gz` for RAW), then `CopyImage` to other regions. Which format `CopyImage` accepts is open. No VHD artifact is built.
+- **Google Cloud (arm64)**: see below.
+
+## Status
+
+| Vendor | Build | Boot on the vendor |
+|---|---|---|
+| UpCloud amd64 | implemented, tested on synthetic images | not yet verified live |
+| Vultr amd64 | implemented, tested on synthetic images | not yet verified live; import format open |
+| Alibaba amd64, arm64 | implemented, tested on synthetic images | not yet verified live; import format open |
+| GCE arm64 | implemented (`tar.gz` with `disk.raw`), tested on synthetic images | not yet verified live; publishing is a TODO |
+
+"Boot not yet verified live" means the OEM id patch is tested (the file is written, the rest of the disk is unchanged, a real Flatcar signature verifies), but nobody has run Ignition on the vendor's metadata service with these images. Each vendor's boot check belongs to SCarpenter's vendor test lanes.
+
+### GCP arm64 publishing (TODO)
+
+Flatcar publishes no GCE arm64 image. This repository builds the `tar.gz`; publishing it is not implemented. The intended steps, which need a Spare Cores GCP project and a keyless (workload identity federation) identity for the workflow:
+
+1. Upload the tarball to a Cloud Storage bucket of the project.
+2. `images.insert` with `rawDisk.source`: `architecture: ARM64`, guest OS features `UEFI_COMPATIBLE`, `VIRTIO_SCSI_MULTIQUEUE`, `GVNIC`; image `flatcar-<channel>-<major>-<minor>-<patch>-arm64`, family `flatcar-<channel>-arm64`. Google allows one image creation per 10 minutes from one source, so the workflow serialises.
+3. `images.setIamPolicy` with `roles/compute.imageUser` for `allAuthenticatedUsers`.
+
+Open: whether `gce` is the right OEM id for Ignition's `gcp` platform on arm64, and the serial console arguments. There is no arm64 `oem-gce` sysext, so no guest agent, no OS Login and no `/dev/disk/by-id/google-*` udev rules.
+
+## How it works
+
+```
+scripts/fetch.sh         download image + DIGESTS.asc, verify signature and SHA512
+scripts/patch-oem.sh     write /grub.cfg into the OEM partition
+scripts/package.sh       raw gzip, qcow2, GCE tar; meta.json per artifact
+scripts/build.sh         the three above for one (channel, version, arch, vendor)
+scripts/manifest.sh      manifest.json and SHA256SUMS
+scripts/matrix.sh        build matrix of a channel; UpCloud skips LTS
+scripts/track.sh         tracked releases without a GitHub release
+scripts/verify.sh        what a consumer runs
+config/platforms.json    per vendor: OEM id, architectures, formats, skipped channels
+config/channels.json     channels built automatically
+```
+
+Patching needs no root. The OEM partition (GPT name `OEM`, partition 6, ext4) is cut out of the disk with `dd` using offsets from `sfdisk --json`, changed with `debugfs` (or mtools if it were FAT), and copied back with `dd conv=notrunc`. Loop mounts and guestfish would need root or a FUSE/libguestfs appliance; this runs identically on GitHub-hosted runners and a laptop. The script digests everything outside the partition before and after, runs `e2fsck`, and reads `grub.cfg` back.
+
+GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads each tracked channel's `version.txt` from the Flatcar release server, dispatches `build.yml` for versions without a release), `build.yml` (build matrix, then a `sign` job with `id-token: write`, then a `release` job, the only one with `contents: write`; a failed build opens an issue). Actions are pinned by commit SHA, no secrets are used.
+
+## Develop
+
+Needs `bash`, `jq`, `curl`, `gpg`, `bzip2`, `gzip`, GNU `tar`, `sfdisk` and `sgdisk` (`gdisk`), `e2fsprogs`, `qemu-img`, and `mtools` for the FAT tests. `shellcheck` and `actionlint` for `make lint`.
+
+```sh
+make lint
+make test      # no network, synthetic disks, fake release server with a throwaway key
+make build CHANNEL=stable VERSION=4757.2.3 ARCH=amd64 VENDOR=upcloud   # downloads about 0.6 GB
+```
+
+## Upstream
+
+Flatcar's own images are the better long-term answer. The plan is to propose `upcloud`, `vultr` and `aliyun` image types and a GCE arm64 image to Flatcar once the vendor boots are verified; this repository then stops building them.
+
+## Licence
+
+MPL-2.0 for the scripts (see `LICENSE`). The images are Flatcar's and stay under their licences.

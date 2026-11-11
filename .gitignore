@@ -1,0 +1,8 @@
+/out/
+/work/
+/cache/
+*.img
+*.img.gz
+*.qcow2
+*.bin.bz2
+*.sigstore.json
