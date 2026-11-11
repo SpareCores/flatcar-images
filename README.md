@@ -30,7 +30,7 @@ Stable and LTS are built automatically when Flatcar releases them (a daily check
 
 One release per Flatcar version, tag `<channel>-<version>` (for example `stable-4757.2.3`). A version is never rebuilt over an existing release, so an image someone created from an artifact always matches its checksum; a fix is a new release with a suffix (`stable-4757.2.3-r2`). Releases are not deleted.
 
-Raw images (about 9 GiB) do not fit a release asset (2 GiB), so only compressed artifacts are released. `make build ... ALL_FORMATS=1` also builds the raw Vultr image for hosting elsewhere.
+Raw images (about 8.5 GB for amd64 stable 4757.2.3) do not fit a release asset (2 GiB), so only compressed artifacts are released. `make build ... ALL_FORMATS=1` also builds the raw Vultr image for hosting elsewhere.
 
 ## Use the releases
 
@@ -93,7 +93,7 @@ None of this is automated here; it is what your infrastructure as code does once
 | Alibaba amd64, arm64 | implemented, tested on synthetic images | not yet verified live; import format open |
 | GCE arm64 | implemented (`tar.gz` with `disk.raw`), tested on synthetic images | not yet verified live; publishing is a TODO |
 
-"Boot not yet verified live" means the OEM id patch is tested (the file is written, the rest of the disk is unchanged, a real Flatcar signature verifies), but nobody has run Ignition on the vendor's metadata service with these images. Each vendor's boot check belongs to SCarpenter's vendor test lanes.
+"Boot not yet verified live" means the OEM id patch is tested (the file is written, the rest of the disk is unchanged, a real Flatcar signature verifies) and a patched stable 4757.2.3 amd64 image booted locally in QEMU (BIOS) with `flatcar.oem.id=upcloud` on the kernel command line, but nobody has run Ignition on the vendor's metadata service with these images. Each vendor's boot check belongs to SCarpenter's vendor test lanes.
 
 ### GCP arm64 publishing (TODO)
 
@@ -109,7 +109,7 @@ Open: whether `gce` is the right OEM id for Ignition's `gcp` platform on arm64, 
 
 ```
 scripts/fetch.sh         download image + DIGESTS.asc, verify signature and SHA512
-scripts/patch-oem.sh     write /grub.cfg into the OEM partition
+scripts/patch-oem.sh     write /grub.cfg into the OEM partition (btrfs, ext4 or FAT)
 scripts/package.sh       raw gzip, qcow2, GCE tar; meta.json per artifact
 scripts/build.sh         the three above for one (channel, version, arch, vendor)
 scripts/manifest.sh      manifest.json and SHA256SUMS
@@ -120,13 +120,13 @@ config/platforms.json    per vendor: OEM id, architectures, formats, skipped cha
 config/channels.json     channels built automatically
 ```
 
-Patching needs no root. The OEM partition (GPT name `OEM`, partition 6, ext4) is cut out of the disk with `dd` using offsets from `sfdisk --json`, changed with `debugfs` (or mtools if it were FAT), and copied back with `dd conv=notrunc`. Loop mounts and guestfish would need root or a FUSE/libguestfs appliance; this runs identically on GitHub-hosted runners and a laptop. The script digests everything outside the partition before and after, runs `e2fsck`, and reads `grub.cfg` back.
+Patching needs no root. The OEM partition (GPT name `OEM`, partition 6) is cut out of the disk with `dd` using offsets from `sfdisk --json` and copied back with `dd conv=notrunc`. In current Flatcar it is btrfs, for which no user-space writer exists: its files are extracted with `btrfs restore` and the filesystem is recreated with `mkfs.btrfs --rootdir` at the same size, with the same label, UUID, node size, mixed block groups and block group tree, under `fakeroot` so every file is owned by root. ext4 (`debugfs`) and FAT (mtools) are handled too. Loop mounts and guestfish would need root or a FUSE/libguestfs appliance; this runs identically on GitHub-hosted runners and a laptop. The script digests everything outside the partition before and after, checks the filesystem (`btrfs check`, `e2fsck`), checks that `grub.cfg` is root-owned with mode 0644, and reads it back.
 
 GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads each tracked channel's `version.txt` from the Flatcar release server, dispatches `build.yml` for versions without a release), `build.yml` (build matrix, then a `sign` job with `id-token: write`, then a `release` job, the only one with `contents: write`; a failed build opens an issue). Actions are pinned by commit SHA, no secrets are used.
 
 ## Develop
 
-Needs `bash`, `jq`, `curl`, `gpg`, `bzip2`, `gzip`, GNU `tar`, `sfdisk` and `sgdisk` (`gdisk`), `e2fsprogs`, `qemu-img`, and `mtools` for the FAT tests. `shellcheck` and `actionlint` for `make lint`.
+Needs `bash`, `jq`, `curl`, `gpg`, `bzip2`, `gzip`, GNU `tar`, `sfdisk` and `sgdisk` (`gdisk`), `btrfs-progs` (6.1 or later, for the block group tree), `fakeroot`, `e2fsprogs`, `qemu-img`, and `mtools` and `dosfstools` for the FAT tests. `shellcheck` and `actionlint` for `make lint`.
 
 ```sh
 make lint

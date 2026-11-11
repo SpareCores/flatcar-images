@@ -2,7 +2,7 @@
 # End to end against a fake release server (file://) with a throwaway signing
 # key and a tiny synthetic image: fetch, verify, patch, package, manifest.
 source "$(dirname "$0")/lib.sh"
-require_tools sgdisk sfdisk jq mkfs.ext4 qemu-img gzip tar gpg bzip2 curl sha512sum
+require_tools sgdisk sfdisk jq mkfs.btrfs btrfs fakeroot qemu-img gzip tar gpg bzip2 curl sha512sum
 
 export GNUPGHOME=$T/gnupg; mkdir -m 700 "$GNUPGHOME"
 gen_key() { # NAME -> prints fingerprint, writes $T/NAME.asc
@@ -16,7 +16,7 @@ gpg --batch --armor --export other@example.test >"$T/other.asc"
 
 # Fake release tree for stable 9999.0.1 amd64 and arm64.
 srv=$T/srv
-make_disk "$T/base.img" ext4
+make_disk "$T/base.img" btrfs # as in Flatcar
 mk_release() { # ARCH SIGNER
   local dir=$srv/stable/$1-usr/9999.0.1
   mkdir -p "$dir"

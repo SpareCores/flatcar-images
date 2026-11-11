@@ -4,7 +4,7 @@
 # usage: build.sh CHANNEL VERSION ARCH VENDOR [OUTDIR]
 #
 # fetch (verified) -> decompress to a sparse raw disk -> set the OEM id ->
-# check -> package. The decompressed disk is about 9 GiB but mostly holes, so
+# check -> package. The decompressed disk is about 8 GiB but mostly holes, so
 # the work directory needs a few GiB of real space.
 #
 # Env: WORKDIR (default ./work), CACHE_DIR (default ./cache, downloaded images

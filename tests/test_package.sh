@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/lib.sh"
-require_tools sgdisk sfdisk jq mkfs.ext4 qemu-img gzip tar
+require_tools sgdisk sfdisk jq mkfs.btrfs btrfs fakeroot qemu-img gzip tar
 
 d=$T/disk.img
-make_disk "$d" ext4
+make_disk "$d" btrfs
 "$SCRIPTS/patch-oem.sh" "$d" aliyun 2>/dev/null
 echo '{"url":"u","sha512":"s5","sha256":"s2","size":1,"signed_by":"F"}' >"$T/src.json"
 
