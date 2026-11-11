@@ -91,7 +91,10 @@ jobs:
           [[ ${revision:-} =~ ^(r[0-9]+)?$ ]] || die "invalid revision: ${revision:-}"
           tag=$(release_tag "$channel" "$version" "${revision:-}")
           artifact=$(artifact_name gce "$channel" "$version" arm64 tar.gz)
-          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$artifact"; then
+          # A failing gh call (no such release, API error) fails the run instead of skipping it.
+          assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name') ||
+            die "cannot read release $tag"
+          if ! grep -qxF "$artifact" <<<"$assets"; then
             echo "::notice title=GCP publishing skipped::release $tag has no $artifact"
             exit 0
           fi
