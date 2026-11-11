@@ -33,7 +33,7 @@ pool=${POOL_ID:-github} provider=${PROVIDER_ID:-flatcar-images} role=${ROLE_ID:-
 [[ $pool =~ ^[a-z][a-z0-9-]{2,30}[a-z0-9]$ && $provider =~ ^[a-z][a-z0-9-]{2,30}[a-z0-9]$ ]] || die "invalid POOL_ID or PROVIDER_ID"
 [[ $role =~ ^[A-Za-z0-9_.]{3,64}$ ]] || die "invalid ROLE_ID"
 sa_email=$sa@$project.iam.gserviceaccount.com
-perms=compute.images.create,compute.images.get,compute.images.delete,compute.images.getIamPolicy,compute.images.setIamPolicy,compute.globalOperations.get
+perms=compute.images.create,compute.images.get,compute.images.delete,compute.images.getIamPolicy,compute.images.setIamPolicy,compute.images.setLabels,compute.globalOperations.get
 cond="assertion.repository == \"$repo\" && assertion.ref == \"refs/heads/main\" && assertion.job_workflow_ref == \"$repo/.github/workflows/publish-gcp.yml@refs/heads/main\""
 
 steps=()

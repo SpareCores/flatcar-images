@@ -14,6 +14,7 @@ assert_fails "default run calls no gcloud" test -e "$T/calls.log"
 assert_ok "prints the repository restriction" grep -qF 'assertion.repository == "SpareCores/flatcar-images"' <<<"$out"
 assert_ok "prints the main branch and workflow restriction" grep -qF 'publish-gcp.yml@refs/heads/main' <<<"$out"
 assert_ok "prints the variables" grep -q '^GCP_WORKLOAD_IDENTITY_PROVIDER=projects/PROJECT_NUMBER/' <<<"$out"
+assert_ok "role can set labels (images.insert with labels needs it)" grep -q "compute.images.setLabels" <<<"$out"
 assert_fails "no service account key is created" grep -q 'keys create' <<<"$out"
 assert_ok "--apply runs the commands" "$SCRIPTS/setup-gcp.sh" --apply
 assert_ok "apply created the pool" grep -q '^iam workload-identity-pools create' "$T/calls.log"
