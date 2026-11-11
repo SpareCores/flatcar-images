@@ -73,18 +73,25 @@ step() {
 }
 
 # image_status: prints READY, FAILED, PENDING, ... or nothing if there is no image.
+# stderr is kept apart so that a gcloud warning is never read as the status.
 image_status() {
-  local out
-  if out=$(gc compute images describe "$name" --format='value(status)' 2>&1); then
+  local out err errfile
+  errfile=$(mktemp)
+  if out=$(gc compute images describe "$name" --format='value(status)' 2>"$errfile"); then
+    rm -f "$errfile"
     printf '%s\n' "$out"
-  elif grep -qiE 'was not found|notFound|NOT_FOUND' <<<"$out"; then
     return 0
-  else
-    die "cannot read image $name: $out"
   fi
+  err=$(<"$errfile"); rm -f "$errfile"
+  if grep -qiE 'was not found|notFound|NOT_FOUND' <<<"$err"; then
+    return 0
+  fi
+  die "cannot read image $name: $err"
 }
 
-rate_limited() { grep -qiE 'rateLimitExceeded|RATE_LIMIT_EXCEEDED|rate limit|too many requests|\b429\b' <<<"$1"; }
+# Compute Engine reports RESOURCE_OPERATION_RATE_EXCEEDED ("Operation rate exceeded ...
+# Too frequent operations from the source resource") and rateLimitExceeded (403).
+rate_limited() { grep -qiE 'rateLimitExceeded|RATE_LIMIT_EXCEEDED|RATE_EXCEEDED|rate exceeded|too frequent operations|rate limit|too many requests|\b429\b' <<<"$1"; }
 
 status=
 if [[ $dry != 1 ]]; then

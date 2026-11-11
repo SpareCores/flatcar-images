@@ -13,13 +13,20 @@ d=$STUB_DIR
 echo "$*" >>"$d/calls.log"
 case "$1 $2 $3" in
   "compute images describe")
-    if [[ -f $d/images/$4 ]]; then cat "$d/images/$4"; exit 0; fi
+    if [[ -f $d/images/$4 ]]; then
+      [[ -n ${STUB_WARN:-} ]] && echo "WARNING: some gcloud notice" >&2
+      cat "$d/images/$4"; exit 0
+    fi
     echo "ERROR: (gcloud.compute.images.describe) Could not fetch resource: - The resource 'projects/p/global/images/$4' was not found" >&2
     exit 1 ;;
   "compute images create")
     n=$(($(cat "$d/creates" 2>/dev/null || echo 0) + 1)); echo "$n" >"$d/creates"
     if [[ $n -le ${STUB_RATE_LIMITS:-0} ]]; then
-      echo "ERROR: (gcloud.compute.images.create) Could not fetch resource: - Quota exceeded: rateLimitExceeded" >&2
+      if [[ -n ${STUB_RATE_OPERATION:-} ]]; then
+        echo "ERROR: (gcloud.compute.images.create) Could not fetch resource: - Operation rate exceeded for resource 'projects/p/global/images/$4'. Too frequent operations from the source resource." >&2
+      else
+        echo "ERROR: (gcloud.compute.images.create) Could not fetch resource: - Quota exceeded: rateLimitExceeded" >&2
+      fi
       exit 1
     fi
     if [[ -n ${STUB_CREATE_ERROR:-} ]]; then echo "ERROR: $STUB_CREATE_ERROR" >&2; exit 1; fi
@@ -42,7 +49,7 @@ printf 'tarball\n' >"$art/$ARTIFACT"
 (cd "$art" && sha256sum "$ARTIFACT" >SHA256SUMS)
 export ARTIFACT_DIR=$art
 
-fresh() { rm -rf "$T/s"; mkdir -p "$T/s/images" "$T/s/objects"; export STUB_DIR=$T/s; unset STUB_RATE_LIMITS STUB_CREATE_ERROR STUB_RM_FAILS; }
+fresh() { rm -rf "$T/s"; mkdir -p "$T/s/images" "$T/s/objects"; export STUB_DIR=$T/s; unset STUB_RATE_LIMITS STUB_RATE_OPERATION STUB_CREATE_ERROR STUB_RM_FAILS STUB_WARN; }
 calls() { cat "$T/s/calls.log"; }
 run() { "$SCRIPTS/publish-gcp.sh" "$@"; }
 
@@ -83,6 +90,9 @@ fresh; echo READY >"$T/s/images/$NAME"
 run stable 1.2.3 2>/dev/null
 assert_ok "unshared ready image is shared, not recreated" grep -q add-iam-policy-binding "$T/s/calls.log"
 assert_fails "no create for a ready image" grep -q '^compute images create' "$T/s/calls.log"
+fresh; echo FAILED >"$T/s/images/$NAME"; export STUB_WARN=1
+assert_ok "a gcloud warning on stderr does not hide a FAILED status" run stable 1.2.3
+assert_eq "recreated despite the warning" READY "$(cat "$T/s/images/$NAME")"
 fresh; echo PENDING >"$T/s/images/$NAME"
 assert_fails_with "stuck PENDING image fails after the polls" 'still PENDING' run stable 1.2.3
 
@@ -90,6 +100,9 @@ echo "-- rate limit"
 fresh; export STUB_RATE_LIMITS=2
 assert_ok "retried until it works" run stable 1.2.3
 assert_eq "three create calls" "3" "$(cat "$T/s/creates")"
+fresh; export STUB_RATE_LIMITS=1 STUB_RATE_OPERATION=1
+assert_ok "RESOURCE_OPERATION_RATE_EXCEEDED wording is retried" run stable 1.2.3
+assert_eq "two create calls" "2" "$(cat "$T/s/creates")"
 fresh; export STUB_RATE_LIMITS=9
 assert_fails_with "gives up after RETRY_MAX" 'still rate limited after 3 attempts' run stable 1.2.3
 assert_fails "no sharing without an image" grep -q add-iam-policy-binding "$T/s/calls.log"
