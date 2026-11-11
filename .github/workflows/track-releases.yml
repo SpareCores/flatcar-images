@@ -1,0 +1,38 @@
+name: track-releases
+
+# Find Flatcar releases of the tracked channels (config/channels.json) that
+# have no GitHub release yet and dispatch build.yml for each.
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: track-releases
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read # gh release list
+      actions: write # gh workflow run
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dispatch builds for missing releases
+        run: |
+          missing=$(scripts/track.sh)
+          if [[ -z $missing ]]; then echo "nothing to build"; exit 0; fi
+          # build.yml releases only from main (the signing identity), and a
+          # schedule event carries no repository default branch.
+          while read -r channel version; do
+            echo "dispatching $channel $version"
+            gh workflow run build.yml --ref main -f "channel=$channel" -f "version=$version"
+          done <<<"$missing"

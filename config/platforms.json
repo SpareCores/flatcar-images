@@ -1,0 +1,47 @@
+{
+  "signing_key": {
+    "file": "keys/flatcar-image-signing-key.asc",
+    "fingerprint": "F88CFEDEFF29A5B4D9523864E25D9AED0593B34A"
+  },
+  "platforms": {
+    "upcloud": {
+      "oem_id": "upcloud",
+      "arches": ["amd64"],
+      "skip_channels": ["lts"],
+      "skip_reason": "the LTS release ships an Ignition without the upcloud platform (needs 2.23 or later)",
+      "grub_extra": [],
+      "formats": [
+        { "ext": "img.gz", "kind": "raw-gzip", "publish": true }
+      ]
+    },
+    "vultr": {
+      "oem_id": "vultr",
+      "arches": ["amd64"],
+      "skip_channels": [],
+      "grub_extra": [],
+      "formats": [
+        { "ext": "img.gz", "kind": "raw-gzip", "publish": true },
+        { "ext": "img", "kind": "raw", "publish": false }
+      ]
+    },
+    "aliyun": {
+      "oem_id": "aliyun",
+      "arches": ["amd64", "arm64"],
+      "skip_channels": [],
+      "grub_extra": [],
+      "formats": [
+        { "ext": "qcow2", "kind": "qcow2", "publish": true },
+        { "ext": "img.gz", "kind": "raw-gzip", "publish": true }
+      ]
+    },
+    "gce": {
+      "oem_id": "gce",
+      "arches": ["arm64"],
+      "skip_channels": [],
+      "grub_extra": [],
+      "formats": [
+        { "ext": "tar.gz", "kind": "gce-tar", "publish": true }
+      ]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "channels": {
+    "stable": { "track": true },
+    "lts": { "track": true },
+    "beta": { "track": false },
+    "alpha": { "track": false }
+  }
+}
