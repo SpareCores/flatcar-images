@@ -1,5 +1,7 @@
 name: build
 
+run-name: build ${{ inputs.channel }} ${{ inputs.version }} ${{ inputs.revision }}
+
 # Build, sign and release the images of one Flatcar channel and version.
 # Dispatched by track-releases.yml or by hand. A version is never rebuilt over
 # an existing release: to rebuild, set revision (r2, r3, ...), which only

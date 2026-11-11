@@ -4,14 +4,14 @@
 
 A generic Flatcar image has no OEM id: on a vendor without an official image it runs Ignition as `qemu` (fw_cfg) and boots unconfigured. The only thing that differs between an official OEM image and a generic one is one file on the OEM partition, `grub.cfg` with `set oem_id="<id>"`. This repository downloads the official generic image, verifies it, writes that one file, and repackages the disk in the format each vendor imports. Nothing else in the image changes (the build checks that everything outside the OEM partition is byte-identical to Flatcar's image).
 
-It is part of how [SpareCores/scarpenter](https://github.com/SpareCores/scarpenter) finds a boot image per vendor, and anyone else can use the releases the same way. It holds no cloud credentials and never boots an image on a vendor.
+It is part of how [SpareCores/scarpenter](https://github.com/SpareCores/scarpenter) finds a boot image per vendor, and anyone else can use the releases the same way. It holds no cloud credentials (the GCP publishing uses keyless federation) and never boots an image on a vendor.
 
 ## The image ladder
 
 Where a node's image comes from, in order of preference:
 
 1. A public Flatcar image the vendor offers. Use it; this repository is not needed.
-2. The vendor lets anyone publish public images: Spare Cores publishes them there (planned for GCP arm64 and, later, Alibaba community images).
+2. The vendor lets anyone publish public images: Spare Cores publishes them there (GCP arm64 is implemented, see below; Alibaba community images later).
 3. Images are created in your own account from the artifacts of this repository, with your infrastructure as code. This is the rung for UpCloud, Vultr and Alibaba today.
 4. The controller imports the image itself: not used.
 
@@ -91,19 +91,24 @@ None of this is automated here; it is what your infrastructure as code does once
 | UpCloud amd64 | implemented, tested on synthetic images | not yet verified live |
 | Vultr amd64 | implemented, tested on synthetic images | not yet verified live; import format open |
 | Alibaba amd64, arm64 | implemented, tested on synthetic images | not yet verified live; import format open |
-| GCE arm64 | implemented (`tar.gz` with `disk.raw`), tested on synthetic images | not yet verified live; publishing is a TODO |
+| GCE arm64 | implemented (`tar.gz` with `disk.raw`) and published by `publish-gcp.yml`, tested on synthetic images and a stubbed `gcloud` | not yet verified live; nothing has been published yet |
 
 "Boot not yet verified live" means the OEM id patch is tested (the file is written, the rest of the disk is unchanged, a real Flatcar signature verifies) and a patched stable 4757.2.3 amd64 image booted locally in QEMU (BIOS) with `flatcar.oem.id=upcloud` on the kernel command line, but nobody has run Ignition on the vendor's metadata service with these images. Each vendor's boot check belongs to SCarpenter's vendor test lanes.
 
-### GCP arm64 publishing (TODO)
+### GCP arm64 publishing
 
-Flatcar publishes no GCE arm64 image. This repository builds the `tar.gz`; publishing it is not implemented. The intended steps, which need a Spare Cores GCP project and a keyless (workload identity federation) identity for the workflow:
+Flatcar publishes no GCE arm64 image. This repository builds the `tar.gz` and, when its owner has set the repository variables, `publish-gcp.yml` turns each release into a public image in a GCP project: workflow after `build` succeeds (or by hand for an existing release), keyless login through workload identity federation (`id-token: write`, `contents: read`, no secret, no key), the release files verified with `scripts/verify.sh`, then `scripts/publish-gcp.sh`:
 
-1. Upload the tarball to a Cloud Storage bucket of the project.
-2. `images.insert` with `rawDisk.source`: `architecture: ARM64`, guest OS features `UEFI_COMPATIBLE`, `VIRTIO_SCSI_MULTIQUEUE`, `GVNIC`; image `flatcar-<channel>-<major>-<minor>-<patch>-arm64`, family `flatcar-<channel>-arm64`. Google allows one image creation per 10 minutes from one source, so the workflow serialises.
-3. `images.setIamPolicy` with `roles/compute.imageUser` for `allAuthenticatedUsers`.
+1. Upload the tarball to the bucket (`import/<image>.tar.gz`).
+2. `gcloud compute images create flatcar-<channel>-<major>-<minor>-<patch>-arm64` (`-rN` for a release revision) with `--architecture=ARM64`, guest OS features `UEFI_COMPATIBLE`, `VIRTIO_SCSI_MULTIQUEUE`, `GVNIC`, family `flatcar-<channel>-arm64`, labels `flatcar-channel`, `flatcar-version` (dots as dashes) and `built-by=spare-cores`, in the multi-region storage location.
+3. `add-iam-policy-binding` `roles/compute.imageUser` for `allAuthenticatedUsers`.
+4. Delete the uploaded object (the image keeps its own copy; a bucket lifecycle rule is the backstop).
 
-Open: whether `gce` is the right OEM id for Ignition's `gcp` platform on arm64, and the serial console arguments. There is no arm64 `oem-gce` sysext, so no guest agent, no OS Login and no `/dev/disk/by-id/google-*` udev rules.
+It is idempotent: an image that exists is not created again (its sharing is still ensured), a `FAILED` one from a half-run is deleted and recreated, a `PENDING` one is waited for. Runs are serialised by a concurrency group, and a rate-limit error (one image creation per 10 minutes) is retried with backoff. While the variables are unset the workflow ends with a notice and succeeds. `scripts/publish-gcp.sh --dry-run CHANNEL VERSION` prints the commands and runs nothing; the tests run it against a stub `gcloud`.
+
+What the workflow expects to exist in the GCP project (managed in Spare Cores' own infrastructure code): [docs/gcp-setup.md](docs/gcp-setup.md).
+
+Open (**unverified**): whether `gce` is the right OEM id for Ignition's `gcp` platform on arm64, the serial console arguments, and that the image boots at all. There is no arm64 `oem-gce` sysext, so no guest agent, no OS Login and no `/dev/disk/by-id/google-*` udev rules.
 
 ## How it works
 
@@ -116,13 +121,14 @@ scripts/manifest.sh      manifest.json and SHA256SUMS
 scripts/matrix.sh        build matrix of a channel; UpCloud skips LTS
 scripts/track.sh         tracked releases without a GitHub release
 scripts/verify.sh        what a consumer runs
+scripts/publish-gcp.sh   create and share the GCE arm64 image from a release
 config/platforms.json    per vendor: OEM id, architectures, formats, skipped channels
 config/channels.json     channels built automatically
 ```
 
 Patching needs no root. The OEM partition (GPT name `OEM`, partition 6) is cut out of the disk with `dd` using offsets from `sfdisk --json` and copied back with `dd conv=notrunc`. In current Flatcar it is btrfs, for which no user-space writer exists: its files are extracted with `btrfs restore` and the filesystem is recreated with `mkfs.btrfs --rootdir` at the same size, with the same label, UUID, node size, mixed block groups and block group tree, under `fakeroot` so every file is owned by root. ext4 (`debugfs`) and FAT (mtools) are handled too. Loop mounts and guestfish would need root or a FUSE/libguestfs appliance; this runs identically on GitHub-hosted runners and a laptop. The script digests everything outside the partition before and after, checks the filesystem (`btrfs check`, `e2fsck`), checks that `grub.cfg` is root-owned with mode 0644, and reads it back.
 
-GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads each tracked channel's `version.txt` from the Flatcar release server, dispatches `build.yml` for versions without a release), `build.yml` (build matrix, then a `sign` job with `id-token: write`, then a `release` job, the only one with `contents: write`; a failed build opens one issue per version, and later failures of the same version, such as the next day's retry by `track-releases.yml`, comment on it). Actions are pinned by commit SHA, no secrets are used.
+GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads each tracked channel's `version.txt` from the Flatcar release server, dispatches `build.yml` for versions without a release), `build.yml` (build matrix, then a `sign` job with `id-token: write`, then a `release` job, the only one with `contents: write`; a failed build opens one issue per version, and later failures of the same version, such as the next day's retry by `track-releases.yml`, comment on it). `publish-gcp.yml` (after `build` succeeds, or by hand; the only workflow that talks to a cloud, with `id-token: write` and `contents: read`, configured by repository variables and skipped while they are unset). Actions are pinned by commit SHA, no secrets are used.
 
 ## Develop
 

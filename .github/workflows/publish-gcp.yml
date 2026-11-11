@@ -1,0 +1,152 @@
+name: publish-gcp
+
+# Publish the GCE arm64 artifact of a release as a public Compute Engine image
+# in the owner's GCP project (docs/gcp-setup.md). Runs after build.yml succeeds
+# (a release created with the workflow token does not trigger a release event,
+# so workflow_run is used) and by hand for any existing release.
+#
+# Configuration comes only from repository variables: GCP_PROJECT_ID,
+# GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_BUCKET and
+# GCP_STORAGE_LOCATION. While any is unset the run is skipped with a notice and
+# succeeds. No secret and no key: the job authenticates with workload identity
+# federation.
+
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Flatcar channel
+        type: choice
+        required: true
+        options: [stable, lts, beta, alpha]
+      version:
+        description: Flatcar version of an existing release, e.g. 4757.2.3
+        type: string
+        required: true
+      revision:
+        description: Release revision suffix (empty, r2, r3, ...)
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  plan:
+    # A failed build has no release to publish.
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'workflow_dispatch') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      enabled: ${{ steps.plan.outputs.enabled }}
+      channel: ${{ steps.plan.outputs.channel }}
+      version: ${{ steps.plan.outputs.version }}
+      revision: ${{ steps.plan.outputs.revision }}
+      tag: ${{ steps.plan.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      GCP_BUCKET: ${{ vars.GCP_BUCKET }}
+      GCP_STORAGE_LOCATION: ${{ vars.GCP_STORAGE_LOCATION }}
+      EVENT: ${{ github.event_name }}
+      # build.yml's run-name: "build <channel> <version> <revision>".
+      RUN_TITLE: ${{ github.event.workflow_run.display_title }}
+      IN_CHANNEL: ${{ inputs.channel }}
+      IN_VERSION: ${{ inputs.version }}
+      IN_REVISION: ${{ inputs.revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: plan
+        run: |
+          source scripts/lib.sh
+          echo "enabled=false" >>"$GITHUB_OUTPUT"
+          unset_vars=()
+          for v in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT GCP_BUCKET GCP_STORAGE_LOCATION; do
+            [[ -n ${!v} ]] || unset_vars+=("$v")
+          done
+          if [[ ${#unset_vars[@]} -gt 0 ]]; then
+            echo "::notice title=GCP publishing skipped::repository variables not set: ${unset_vars[*]}. See docs/gcp-setup.md."
+            exit 0
+          fi
+          if [[ $EVENT == workflow_dispatch ]]; then
+            [[ $GITHUB_REF == refs/heads/main ]] || die "publish-gcp.yml publishes only from main, not $GITHUB_REF"
+            channel=$IN_CHANNEL version=$IN_VERSION revision=$IN_REVISION
+          else
+            read -r word channel version revision <<<"$RUN_TITLE"
+            if [[ $word != build || -z ${version:-} ]]; then
+              echo "::notice title=GCP publishing skipped::cannot read channel and version from the build run title"
+              exit 0
+            fi
+          fi
+          valid_channel "$channel"; valid_version "$version"
+          [[ ${revision:-} =~ ^(r[0-9]+)?$ ]] || die "invalid revision: ${revision:-}"
+          tag=$(release_tag "$channel" "$version" "${revision:-}")
+          artifact=$(artifact_name gce "$channel" "$version" arm64 tar.gz)
+          # A failing gh call (no such release, API error) fails the run instead of skipping it.
+          assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name') ||
+            die "cannot read release $tag"
+          if ! grep -qxF "$artifact" <<<"$assets"; then
+            echo "::notice title=GCP publishing skipped::release $tag has no $artifact"
+            exit 0
+          fi
+          {
+            echo "enabled=true"
+            echo "channel=$channel"
+            echo "version=$version"
+            echo "revision=${revision:-}"
+            echo "tag=$tag"
+          } >>"$GITHUB_OUTPUT"
+
+  publish:
+    needs: plan
+    if: ${{ needs.plan.outputs.enabled == 'true' }}
+    runs-on: ubuntu-24.04
+    # One image creation per 10 minutes is allowed from one source: one run at a
+    # time, never cancelled (GitHub keeps one waiting run per group: publish a
+    # skipped version by dispatching this workflow again).
+    concurrency:
+      group: publish-gcp
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # workload identity federation: the OIDC token is exchanged for GCP access
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ needs.plan.outputs.channel }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      REVISION: ${{ needs.plan.outputs.revision }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_BUCKET: ${{ vars.GCP_BUCKET }}
+      GCP_STORAGE_LOCATION: ${{ vars.GCP_STORAGE_LOCATION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - name: Download and verify the release files
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/release" \
+            --pattern 'SHA256SUMS*' --pattern 'flatcar-gce-*-arm64.tar.gz*'
+          scripts/verify.sh "$RUNNER_TEMP/release"
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - name: Create and share the image
+        run: |
+          export ARTIFACT_DIR="$RUNNER_TEMP/release"
+          scripts/publish-gcp.sh "$CHANNEL" "$VERSION" "$REVISION"
