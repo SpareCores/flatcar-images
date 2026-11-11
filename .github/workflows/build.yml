@@ -1,0 +1,185 @@
+name: build
+
+# Build, sign and release the images of one Flatcar channel and version.
+# Dispatched by track-releases.yml or by hand. A version is never rebuilt over
+# an existing release: to rebuild, set revision (r2, r3, ...), which only
+# changes the release tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Flatcar channel
+        type: choice
+        required: true
+        options: [stable, lts, beta, alpha]
+      version:
+        description: Flatcar version, e.g. 4757.2.3
+        type: string
+        required: true
+      revision:
+        description: Release revision suffix (empty, r2, r3, ...)
+        type: string
+        required: false
+        default: ""
+      vendors:
+        description: Comma-separated vendor filter (empty means all)
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: build-${{ inputs.channel }}-${{ inputs.version }}-${{ inputs.revision }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      tag: ${{ steps.plan.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      REVISION: ${{ inputs.revision }}
+      VENDORS: ${{ inputs.vendors }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: plan
+        run: |
+          source scripts/lib.sh
+          valid_channel "$CHANNEL"; valid_version "$VERSION"
+          [[ $REVISION =~ ^(r[0-9]+)?$ ]] || die "invalid revision: $REVISION"
+          tag=$(release_tag "$CHANNEL" "$VERSION" "$REVISION")
+          if gh release view "$tag" >/dev/null 2>&1; then
+            die "release $tag exists; a version is never rebuilt over a release (use revision r2, r3, ...)"
+          fi
+          matrix=$(scripts/matrix.sh "$CHANNEL" "$VENDORS")
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      VENDOR: ${{ matrix.vendor }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends mtools e2fsprogs gdisk qemu-utils
+      - name: Test
+        run: make test
+      - name: Build
+        run: |
+          export WORKDIR="$RUNNER_TEMP/work" CACHE_DIR="$RUNNER_TEMP/cache"
+          scripts/build.sh "$CHANNEL" "$VERSION" "$ARCH" "$VENDOR" "$RUNNER_TEMP/out"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: artifacts-${{ matrix.vendor }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/out/
+          compression-level: 0
+          if-no-files-found: error
+
+  sign:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # keyless signing: the Sigstore certificate carries this workflow's identity
+      attestations: write # build provenance
+    env:
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      REVISION: ${{ inputs.revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: artifacts-*
+          path: ${{ runner.temp }}/release
+          merge-multiple: true
+      - name: Manifest and checksums
+        run: |
+          scripts/manifest.sh "$RUNNER_TEMP/release" "$CHANNEL" "$VERSION" "$REVISION"
+          rm -f "$RUNNER_TEMP"/release/*.meta.json
+          ls -l "$RUNNER_TEMP/release"
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - name: Sign
+        run: |
+          cd "$RUNNER_TEMP/release"
+          for f in $(awk '{print $2}' SHA256SUMS) SHA256SUMS; do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+          done
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/release/SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release/
+          compression-level: 0
+          if-no-files-found: error
+
+  release:
+    needs: [plan, sign]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release; no other job has it
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: ${{ runner.temp }}/release
+      - name: Create the release
+        run: |
+          scripts/release-notes.sh "$RUNNER_TEMP/release/manifest.json" >"$RUNNER_TEMP/notes.md"
+          cd "$RUNNER_TEMP/release"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Flatcar $CHANNEL $VERSION" --notes-file "$RUNNER_TEMP/notes.md" ./*
+
+  report-failure:
+    needs: [plan, build, sign, release]
+    if: ${{ failure() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open an issue
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Build failed: Flatcar $CHANNEL $VERSION" \
+            --body "The build of $CHANNEL $VERSION failed: $RUN_URL. Nothing is retried automatically; fix the cause and dispatch the build again."
