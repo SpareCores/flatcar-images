@@ -60,7 +60,7 @@ echo "-- build"
 assert_ok "build vultr amd64" "$SCRIPTS/build.sh" stable 9999.0.1 amd64 vultr "$OUT"
 assert_ok "build upcloud amd64" "$SCRIPTS/build.sh" stable 9999.0.1 amd64 upcloud "$OUT"
 assert_ok "build aliyun arm64" "$SCRIPTS/build.sh" stable 9999.0.1 arm64 aliyun "$OUT"
-assert_ok "build gce arm64" "$SCRIPTS/build.sh" stable 9999.0.1 arm64 gce "$OUT"
+assert_fails_with "gce arm64 is not built here (build-gce-arm64.yml builds it)" "but by build-gce-arm64.yml" "$SCRIPTS/build.sh" stable 9999.0.1 arm64 gce "$OUT"
 assert_ok "work directory is cleaned" test -z "$(ls "$WORKDIR")"
 gz=$OUT/flatcar-vultr-stable-9999.0.1-amd64.img.gz
 gzip -dc "$gz" >"$T/vultr.raw"
@@ -77,7 +77,7 @@ assert_ok "raw vultr image exists" test -s "$T/out-all/flatcar-vultr-stable-9999
 echo "-- manifest and verify"
 assert_ok "manifest" "$SCRIPTS/manifest.sh" "$OUT" stable 9999.0.1
 assert_eq "manifest maps version to artifacts" \
-  "flatcar-aliyun-stable-9999.0.1-arm64.img.gz flatcar-aliyun-stable-9999.0.1-arm64.qcow2 flatcar-gce-stable-9999.0.1-arm64.tar.gz flatcar-upcloud-stable-9999.0.1-amd64.img.gz flatcar-vultr-stable-9999.0.1-amd64.img.gz" \
+  "flatcar-aliyun-stable-9999.0.1-arm64.img.gz flatcar-aliyun-stable-9999.0.1-arm64.qcow2 flatcar-upcloud-stable-9999.0.1-amd64.img.gz flatcar-vultr-stable-9999.0.1-amd64.img.gz" \
   "$(jq -r '[.artifacts[].name] | join(" ")' "$OUT/manifest.json")"
 assert_eq "manifest tag and version" "stable-9999.0.1 stable 9999.0.1" "$(jq -r '"\(.tag) \(.channel) \(.version)"' "$OUT/manifest.json")"
 assert_eq "manifest keys per artifact" "arch,channel,extension,format,name,oem_id,published,sha256,size,source_image,url,vendor,version" \

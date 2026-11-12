@@ -29,15 +29,19 @@ bad=$(jq -r '.platforms | to_entries[] | .key as $p | .value.arches[] as $a | .v
   | "flatcar-\($p)-stable-1.2.3-\($a).\(.ext)"' "$P" | grep -vE '^flatcar-[a-z0-9]+-(stable|lts|beta|alpha)-[0-9.]+-(amd64|arm64)\.[a-z0-9.]+$' || true)
 assert_eq "every artifact name matches the convention" "" "$bad"
 
-# Plan 22: UpCloud skips LTS, aliyun has both arches, gce is arm64 only.
+# Plan 22: UpCloud skips LTS, aliyun has both arches. gce (arm64) is built by
+# build-gce-arm64.yml from a kernel fork, so it is not in the build.yml matrix.
 assert_eq "stable matrix" \
-  "aliyun/amd64 aliyun/arm64 gce/arm64 upcloud/amd64 vultr/amd64" \
+  "aliyun/amd64 aliyun/arm64 upcloud/amd64 vultr/amd64" \
   "$("$SCRIPTS/matrix.sh" stable | jq -r '[.include[] | "\(.vendor)/\(.arch)"] | sort | join(" ")')"
 assert_eq "lts matrix has no upcloud" \
-  "aliyun/amd64 aliyun/arm64 gce/arm64 vultr/amd64" \
+  "aliyun/amd64 aliyun/arm64 vultr/amd64" \
   "$("$SCRIPTS/matrix.sh" lts | jq -r '[.include[] | "\(.vendor)/\(.arch)"] | sort | join(" ")')"
 assert_eq "vendor filter" "vultr/amd64" \
   "$("$SCRIPTS/matrix.sh" stable vultr | jq -r '[.include[] | "\(.vendor)/\(.arch)"] | join(" ")')"
+assert_fails "gce is not in the matrix even when asked for" "$SCRIPTS/matrix.sh" stable gce
+assert_eq "gce is marked as built by its own workflow" "build-gce-arm64.yml" "$(jq -r .platforms.gce.built_by "$P")"
+assert_fails_with "build.sh refuses gce" "but by build-gce-arm64.yml" "$SCRIPTS/build.sh" stable 4757.2.3 arm64 gce "$T/o"
 assert_fails "upcloud-only lts matrix is empty and fails" "$SCRIPTS/matrix.sh" lts upcloud
 assert_fails "bad channel is rejected" "$SCRIPTS/matrix.sh" "stable;x"
 assert_fails_with "build refuses upcloud on lts" "Ignition" "$SCRIPTS/build.sh" lts 4081.3.12 amd64 upcloud "$T/o"
