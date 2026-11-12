@@ -13,9 +13,9 @@
 # still compiled.
 set -euo pipefail
 conf=/build/arm64-usr/etc/portage/make.conf.user
-touch "$conf"
+sudo touch "$conf"
 if ! grep -q 'binpkg-changed-deps' "$conf"; then
   # shellcheck disable=SC2016 # the variable is expanded by portage
   echo 'EMERGE_DEFAULT_OPTS="${EMERGE_DEFAULT_OPTS} --binpkg-changed-deps=n"' | sudo tee -a "$conf" >/dev/null
 fi
-cat "$conf"
+sudo cat "$conf"
