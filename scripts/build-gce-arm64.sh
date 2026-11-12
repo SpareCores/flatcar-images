@@ -146,7 +146,15 @@ sdk() {
 
 # --- 2. build
 log "== build_packages (binary cache for $version, kernel from source)"
-sdk ./build_packages --board=$board
+sdk /mnt/host/images-repo/scripts/sdk-prepare-gce-arm64.sh
+# The few source builds download distfiles from mirrors that sometimes fail:
+# portage resumes where it stopped, so a failed run is repeated.
+for attempt in 1 2 3; do
+  sdk ./build_packages --board=$board && break
+  [[ $attempt -lt 3 ]] || die "build_packages failed $attempt times"
+  log "build_packages failed (attempt $attempt), retrying in 60 s"
+  sleep 60
+done
 log "== build_image"
 sdk ./build_image --board=$board --group="$channel" prod oem_sysext
 # run_sdk_container mounts __build__/images at /mnt/host/source/src/build, and

@@ -62,6 +62,7 @@ cmd=$1; shift
 tr_path() { local p=${1/#\/mnt\/host\/source\/src\/build/$here/__build__/images}; printf '%s' "${p/#\/mnt\/host\/images-repo/$STUB_REPO}"; }
 images=$here/__build__/images/images/arm64-usr
 case ${cmd##*/} in
+  sdk-prepare-gce-arm64.sh) [[ $# -eq 0 ]] ;;
   build_packages) [[ $* == --board=arm64-usr ]] ;;
   build_image)
     group=
@@ -124,12 +125,13 @@ assert_eq "disk.raw is padded to a whole GiB" "0" "$(($(stat -c %s "$T/x/disk.ra
 assert_ok "disk.raw starts with the built disk" cmp -n 67108864 "$T/good.disk" "$T/x/disk.raw"
 assert_eq "oldgnu tar" "ustar " "$(gzip -dc "$T/out/$art" | dd bs=1 skip=257 count=6 status=none)"
 assert_eq "SDK commands in order, with -U and the container" \
-  "-U -n flatcar-gce-arm64-test1 ./build_packages --board=arm64-usr
+  "-U -n flatcar-gce-arm64-test1 /mnt/host/images-repo/scripts/sdk-prepare-gce-arm64.sh
+-U -n flatcar-gce-arm64-test1 ./build_packages --board=arm64-usr
 -U -n flatcar-gce-arm64-test1 ./build_image --board=arm64-usr --group=stable prod oem_sysext
 -U -n flatcar-gce-arm64-test1 ./image_to_vm.sh --board=arm64-usr --format=gce --from=/mnt/host/source/src/build/images/arm64-usr/stable-9999.0.1-a1
 -U -n flatcar-gce-arm64-test1 /mnt/host/images-repo/scripts/verify-gce-arm64.sh /mnt/host/source/src/build/images/arm64-usr/stable-9999.0.1-a1 /mnt/host/source/src/build/images/arm64-usr/stable-9999.0.1-a1/disk-verify/disk.raw" \
   "$(sed -E 's/ -m [^ ]+//; s/ (nice -n 10 ionice -c 2 -n 7)//' "$STUB_LOG")"
-assert_eq "no host credentials reach run_sdk_container (four calls)" "4 4" \
+assert_eq "no host credentials reach run_sdk_container (five calls)" "5 5" \
   "$(wc -l <"$STUB_LOG.env") $(grep -c "^HOME=$T/fork/.sdk-home SSH_AUTH_SOCK= GOOGLE_APPLICATION_CREDENTIALS=\$" "$STUB_LOG.env")"
 # The root path of build-gce-arm64.sh drops privileges with setpriv; the tests
 # do not run as root, so only the option parsing is checked: setpriv must get
@@ -153,7 +155,7 @@ echo "-- build with host verification, revision and no nice"
 assert_ok "host runner, revision r2" env FORK_DIR="$T/fork" OUTDIR="$T/out2" CONTAINER=flatcar-gce-arm64-test1 VERIFY_RUNNER=host NICE_CMD= \
   "$SCRIPTS/build-gce-arm64.sh" stable 9999.0.1 r2
 assert_ok "revision in the artifact name" test -s "$T/out2/flatcar-gce-stable-9999.0.1-r2-arm64.tar.gz"
-assert_eq "no verify call in the SDK for the host runner, no nice" "3 0" "$(wc -l <"$STUB_LOG") $(grep -c 'nice\|verify-gce' "$STUB_LOG")"
+assert_eq "no verify call in the SDK for the host runner, no nice" "4 0" "$(wc -l <"$STUB_LOG") $(grep -c 'nice\|verify-gce' "$STUB_LOG")"
 
 echo "-- build refuses a bad fork"
 export VERIFY_RUNNER=host
