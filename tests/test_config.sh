@@ -48,4 +48,21 @@ assert_fails "bad channel is rejected" "$SCRIPTS/matrix.sh" "stable;x"
 assert_fails_with "build refuses upcloud on lts" "Ignition" "$SCRIPTS/build.sh" lts 4081.3.12 amd64 upcloud "$T/o"
 assert_fails_with "build refuses vultr arm64" "not built for arm64" "$SCRIPTS/build.sh" stable 4757.2.3 arm64 vultr "$T/o"
 assert_eq "no published format is over the asset limit by config" "0" "$(jq '[.platforms[].formats[] | select(.kind=="raw" and .publish)] | length' "$P")"
+
+# build-gce-arm64.yml runs fork code as root on the organisation's shared runner.
+W=$ROOT/.github/workflows
+G=$W/build-gce-arm64.yml
+assert_ok "gce arm64 workflow exists" test -f "$G"
+assert_eq "its only trigger is workflow_dispatch" "  workflow_dispatch:" "$(awk '/^on:/{f=1;next} /^[a-z]/{f=0} f' "$G" | grep -E '^  [a-z_]+:')"
+assert_eq "only it uses the self-hosted runner" "$G" "$(grep -l 'self-hosted' "$W"/*.yml)"
+assert_ok "it runs on the workhorse runner" grep -q 'runs-on: \[self-hosted, workhorse\]' "$G"
+assert_eq "it refuses refs other than main, in the plan and before the build" "2" "$(grep -c 'GITHUB_REF == refs/heads/main' "$G")"
+assert_ok "one build at a time" grep -qx '  group: build-gce-arm64' "$G"
+assert_ok "and a waiting run is never cancelled" grep -qx '  cancel-in-progress: false' "$G"
+assert_ok "generous timeout" grep -q 'timeout-minutes: 360' "$G"
+assert_eq "cleanup runs always" "        if: \${{ always() }}" "$(grep -B1 'run: scripts/cleanup-gce-arm64.sh' "$G" | head -1)"
+assert_eq "only the release job can write contents" "1" "$(grep -c 'contents: write' "$G")"
+unpinned=$(grep -hE '^\s*(- )?uses:' "$W"/*.yml | grep -vE 'uses: [^@ ]+@[0-9a-f]{40}( |$)' || true)
+assert_eq "every action in every workflow is pinned by full commit SHA" "" "$unpinned"
+assert_ok "verify.sh accepts the gce arm64 workflow identity" grep -q 'build-gce-arm64' "$SCRIPTS/verify.sh"
 finish

@@ -1,0 +1,234 @@
+name: build-gce-arm64
+
+run-name: build gce arm64 ${{ inputs.channel }} ${{ inputs.version }} ${{ inputs.revision }}
+
+# Build the Flatcar arm64 GCE image from the kernel fork and put it into the
+# release <channel>-<version> (docs/gce-arm64.md). Flatcar's arm64 kernel has no
+# gVNIC driver, so the generic image with the OEM id set cannot boot on GCE
+# (every GCE arm64 machine type is gVNIC-only); the fork adds it.
+#
+# By hand only (workflow_dispatch), never on pull requests or pushes: the build
+# runs fork code as root on the organisation's shared self-hosted runner, and
+# the signature must come from main (verify.sh pins this workflow on main).
+# The fork must be a SpareCores repository. The release is the one build.yml
+# made: the artifact of the same name is replaced, manifest.json and SHA256SUMS
+# are updated, and the release is created when there is none. Not wired into
+# track-releases.yml or publish-gcp.yml: dispatch publish-gcp by hand afterwards.
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Flatcar channel
+        type: choice
+        required: true
+        options: [stable, lts, beta, alpha]
+      version:
+        description: Flatcar version, e.g. 4757.2.3 (the fork must be based on the upstream tag <channel>-<version>)
+        type: string
+        required: true
+      fork_repository:
+        description: Fork of flatcar/scripts (a SpareCores repository)
+        type: string
+        required: false
+        default: SpareCores/flatcar-scripts
+      fork_ref:
+        description: Branch or tag of the fork
+        type: string
+        required: false
+        default: gce-arm64
+      revision:
+        description: Release revision suffix (empty, r2, r3, ...); in the release tag and the artifact name
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+# One build at a time on the shared runner; a waiting run is never cancelled.
+concurrency:
+  group: build-gce-arm64
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      artifact: ${{ steps.plan.outputs.artifact }}
+    env:
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      REVISION: ${{ inputs.revision }}
+      FORK_REPOSITORY: ${{ inputs.fork_repository }}
+      FORK_REF: ${{ inputs.fork_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: plan
+        run: |
+          source scripts/lib.sh
+          [[ $GITHUB_REF == refs/heads/main ]] || die "build-gce-arm64.yml runs only from main, not $GITHUB_REF"
+          valid_channel "$CHANNEL"; valid_version "$VERSION"
+          [[ $REVISION =~ ^(r[0-9]+)?$ ]] || die "invalid revision: $REVISION"
+          valid_fork_repository "$FORK_REPOSITORY"; valid_fork_ref "$FORK_REF"
+          echo "tag=$(release_tag "$CHANNEL" "$VERSION" "$REVISION")" >>"$GITHUB_OUTPUT"
+          echo "artifact=$(artifact_name gce "$CHANNEL" "$VERSION" arm64 tar.gz "$REVISION")" >>"$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    runs-on: [self-hosted, workhorse]
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    env:
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      REVISION: ${{ inputs.revision }}
+      FORK_REPOSITORY: ${{ inputs.fork_repository }}
+      FORK_REF: ${{ inputs.fork_ref }}
+      # Everything of this run lives in one directory of the workspace and one
+      # container; the cleanup step removes exactly these.
+      RUN_DIR: gce-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+      CONTAINER: flatcar-gce-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Refuse to run anywhere but main
+        run: |
+          [[ $GITHUB_REF == refs/heads/main ]] || { echo "::error::build-gce-arm64.yml runs only from main, not $GITHUB_REF"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the fork (full history and tags)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.fork_repository }}
+          ref: ${{ inputs.fork_ref }}
+          path: ${{ env.RUN_DIR }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Build, verify and package
+        run: |
+          export FORK_DIR="$GITHUB_WORKSPACE/$RUN_DIR" OUTDIR="$RUNNER_TEMP/out" EVIDENCE_DIR="$RUNNER_TEMP/evidence"
+          scripts/build-gce-arm64.sh "$CHANNEL" "$VERSION" "$REVISION"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gce-arm64
+          path: ${{ runner.temp }}/out/
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: gce-arm64-evidence
+          path: ${{ runner.temp }}/evidence/
+          retention-days: 30
+          if-no-files-found: ignore
+      - name: Remove the container and the build directory
+        if: ${{ always() }}
+        run: scripts/cleanup-gce-arm64.sh "$GITHUB_WORKSPACE/$RUN_DIR"
+
+  sign:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # keyless signing: the Sigstore certificate carries this workflow's identity
+      attestations: write # build provenance
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      REVISION: ${{ inputs.revision }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      ARTIFACT: ${{ needs.plan.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gce-arm64
+          path: ${{ runner.temp }}/new
+      - name: Read the existing release
+        id: existing
+        run: |
+          mkdir -p "$RUNNER_TEMP/existing"
+          if err=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>&1 >"$RUNNER_TEMP/existing/notes.md"); then
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/existing" --pattern manifest.json
+            echo "exists=true" >>"$GITHUB_OUTPUT"
+          elif [[ $err == *"release not found"* ]]; then
+            echo "no release $TAG yet: it will be created"
+            echo "exists=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "::error::cannot read release $TAG: $err"
+            exit 1
+          fi
+      - name: Manifest, checksums and release notes
+        env:
+          EXISTS: ${{ steps.existing.outputs.exists }}
+        run: |
+          pub=$RUNNER_TEMP/pub
+          mkdir -p "$pub"
+          existing=()
+          [[ $EXISTS == true ]] && existing=("$RUNNER_TEMP/existing/manifest.json")
+          result=$(scripts/release-gce-arm64.sh assemble "$RUNNER_TEMP/new" "$pub/files" "$CHANNEL" "$VERSION" "$REVISION" "${existing[@]}")
+          echo "$result $ARTIFACT"
+          notes_in=()
+          [[ $EXISTS == true ]] && notes_in=("$RUNNER_TEMP/existing/notes.md")
+          scripts/release-gce-arm64.sh notes "$pub/files/manifest.json" "$ARTIFACT" "${notes_in[@]}" >"$pub/notes.md"
+          echo "$EXISTS" >"$pub/exists"
+          ls -l "$pub/files"
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - name: Sign
+        run: |
+          cd "$RUNNER_TEMP/pub/files"
+          for f in "$ARTIFACT" manifest.json SHA256SUMS; do
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+          done
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/pub/files/${{ needs.plan.outputs.artifact }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gce-arm64-release
+          path: ${{ runner.temp }}/pub/
+          compression-level: 0
+          if-no-files-found: error
+
+  release:
+    needs: [plan, sign]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create or update the release; no other job has it
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gce-arm64-release
+          path: ${{ runner.temp }}/pub
+      - name: Upload to the release
+        run: |
+          pub=$RUNNER_TEMP/pub
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then now=true; else now=false; fi
+          [[ $now == "$(cat "$pub/exists")" ]] || { echo "::error::release $TAG changed since the manifest was made; dispatch this workflow again"; exit 1; }
+          cd "$pub/files"
+          if [[ $now == true ]]; then
+            # --clobber replaces the assets of the same name: the GCE tarball
+            # (the earlier OEM-patched one, if any), manifest.json, SHA256SUMS
+            # and their bundles.
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber ./*
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$pub/notes.md"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "Flatcar $CHANNEL $VERSION" --notes-file "$pub/notes.md" ./*
+          fi
