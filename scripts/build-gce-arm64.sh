@@ -33,8 +33,8 @@
 # SDK would rewrite version.txt to that, pointing the binary cache at a build
 # that does not exist. -U uses version.txt as it is.
 #
-# Everything the build creates is under FORK_DIR (its __build__ directory and
-# sdk_container/.cache) or in the container named CONTAINER; cleanup-gce-arm64.sh
+# Everything the build creates is under FORK_DIR (its __build__ directory,
+# sdk_container/.cache, .sdk-home) or in the container named CONTAINER; cleanup-gce-arm64.sh
 # removes both. The SDK image stays cached.
 #
 # Env:
@@ -110,9 +110,20 @@ mkdir -p "$outdir" "$evidence"
 
 # sdk ARGS...: a command in the SDK container (created on the first call, then reused).
 # The repository's scripts are mounted read-only for the verification.
+# run_sdk_container mounts the caller's ~/.gnupg, /run/user/<uid>/gnupg, the
+# SSH agent socket and the gcloud credentials (and writes a boto file next to
+# them) into the container when it finds them. On the shared runner none of
+# the host's credentials belong in the build: HOME points into the run
+# directory and the agent and credential variables are unset (DOCKER_CONFIG
+# keeps the Docker client configuration of the real home).
+sdk_home=$fork/.sdk-home
+mkdir -p "$sdk_home"
 # shellcheck disable=SC2086 # nice_cmd is a word list
 sdk() {
-  (cd "$fork" && ./run_sdk_container -U -n "$container" -m "$REPO_ROOT:/mnt/host/images-repo:ro" $nice_cmd "$@")
+  (cd "$fork" &&
+    env -u SSH_AUTH_SOCK -u GNUPGHOME -u GOOGLE_APPLICATION_CREDENTIALS -u BOTO_PATH \
+      DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME:-/root}/.docker}" HOME="$sdk_home" \
+      ./run_sdk_container -U -n "$container" -m "$REPO_ROOT:/mnt/host/images-repo:ro" $nice_cmd "$@")
 }
 
 # --- 2. build
@@ -120,14 +131,19 @@ log "== build_packages (binary cache for $version, kernel from source)"
 sdk ./build_packages --board=$board
 log "== build_image"
 sdk ./build_image --board=$board --group="$channel" prod oem_sysext
-images_link=$fork/__build__/images/$board/$channel-latest
-[[ -e $images_link ]] || die "build_image left no $images_link"
+# run_sdk_container mounts __build__/images at /mnt/host/source/src/build, and
+# build_image writes to <that>/images/<board>/<group>-<version>-a1 with the
+# relative symlink <group>-latest next to it.
+images_link=$fork/__build__/images/images/$board/$channel-latest
+[[ -L $images_link && -d $images_link ]] || die "build_image left no $images_link"
 images=$(readlink -f "$images_link")
+[[ $images == "$fork/__build__/images/images/$board/"* ]] || die "$images_link points outside the build directory: $images"
 img_name=$(basename "$images")
 in_sdk=/mnt/host/source/src/build/images/$board/$img_name
 log "== image_to_vm --format=gce ($images)"
 sdk ./image_to_vm.sh --board=$board --format=gce --from="$in_sdk"
-gce_tar=$images/flatcar_production_gce_image.tar.gz
+# _write_gce_conf: flatcar_production_image.bin -> flatcar_production_gce.tar.gz
+gce_tar=$images/flatcar_production_gce.tar.gz
 [[ -s $gce_tar ]] || die "image_to_vm.sh left no $gce_tar"
 [[ $(tar -tzf "$gce_tar") == disk.raw ]] || die "$gce_tar does not hold exactly disk.raw"
 

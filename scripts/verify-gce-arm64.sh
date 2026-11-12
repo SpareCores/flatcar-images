@@ -3,7 +3,7 @@
 #
 # usage: verify-gce-arm64.sh IMAGE_DIR DISK
 #
-# IMAGE_DIR is the build_image output directory (__build__/images/arm64-usr/
+# IMAGE_DIR is the build_image output directory (__build__/images/images/arm64-usr/
 # <channel>-<version>-a1), DISK the disk.raw of the GCE tarball. Every check
 # is run and reported; the exit status is non-zero if any failed.
 #

@@ -47,6 +47,7 @@ cat >"$STUB" <<'STUBEOF'
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 echo "$*" >>"${STUB_LOG:?}"
+echo "HOME=$HOME SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-} GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-}" >>"$STUB_LOG.env"
 while [[ $# -gt 0 ]]; do
   case $1 in
     -U) shift ;;
@@ -56,9 +57,10 @@ while [[ $# -gt 0 ]]; do
 done
 while [[ $# -gt 0 && $1 != ./* && $1 != /* ]]; do shift; done # nice/ionice prefix
 cmd=$1; shift
-# Paths as the container sees them.
-tr_path() { local p=${1/#\/mnt\/host\/source\/src\/build/$here/__build__}; printf '%s' "${p/#\/mnt\/host\/images-repo/$STUB_REPO}"; }
-images=$here/__build__/images/arm64-usr
+# Paths as the container sees them: run_sdk_container mounts __build__/images
+# at /mnt/host/source/src/build, and build_image writes to <that>/images/<board>.
+tr_path() { local p=${1/#\/mnt\/host\/source\/src\/build/$here/__build__/images}; printf '%s' "${p/#\/mnt\/host\/images-repo/$STUB_REPO}"; }
+images=$here/__build__/images/images/arm64-usr
 case ${cmd##*/} in
   build_packages) [[ $* == --board=arm64-usr ]] ;;
   build_image)
@@ -80,7 +82,7 @@ case ${cmd##*/} in
     for a; do [[ $a == --from=* ]] && from=$(tr_path "${a#--from=}"); done
     [[ -d $from ]]
     w=$(mktemp -d); cp "$STUB_DISK" "$w/disk.raw"
-    tar -czf "$from/flatcar_production_gce_image.tar.gz" -C "$w" disk.raw; rm -rf "$w"
+    tar -czf "$from/flatcar_production_gce.tar.gz" -C "$w" disk.raw; rm -rf "$w"
     ;;
   verify-gce-arm64.sh)
     exec "$(tr_path "$cmd")" "$(tr_path "$1")" "$(tr_path "$2")"
@@ -107,8 +109,8 @@ mkfork "$T/fork"
 export STUB_LOG=$T/sdk.log
 build() { FORK_DIR=$1 OUTDIR=$2 CONTAINER=flatcar-gce-arm64-test1 "${@:3}" "$SCRIPTS/build-gce-arm64.sh" stable 9999.0.1 "${REV:-}"; }
 head=$(git -C "$T/fork" rev-parse HEAD)
-: >"$STUB_LOG"
-assert_ok "builds with the default (SDK) verification" env FORK_DIR="$T/fork" OUTDIR="$T/out" CONTAINER=flatcar-gce-arm64-test1 "$SCRIPTS/build-gce-arm64.sh" stable 9999.0.1
+: >"$STUB_LOG"; : >"$STUB_LOG.env"
+assert_ok "builds with the default (SDK) verification" env SSH_AUTH_SOCK="$T/agent.sock" GOOGLE_APPLICATION_CREDENTIALS="$T/adc.json" FORK_DIR="$T/fork" OUTDIR="$T/out" CONTAINER=flatcar-gce-arm64-test1 "$SCRIPTS/build-gce-arm64.sh" stable 9999.0.1
 art=flatcar-gce-stable-9999.0.1-arm64.tar.gz
 assert_ok "artifact and meta exist" test -s "$T/out/$art" -a -s "$T/out/$art.meta.json"
 assert_eq "no stray files in the output directory" "$art $art.meta.json" "$(ls "$T/out" | tr '\n' ' ' | sed 's/ $//')"
@@ -127,12 +129,14 @@ assert_eq "SDK commands in order, with -U and the container" \
 -U -n flatcar-gce-arm64-test1 ./image_to_vm.sh --board=arm64-usr --format=gce --from=/mnt/host/source/src/build/images/arm64-usr/stable-9999.0.1-a1
 -U -n flatcar-gce-arm64-test1 /mnt/host/images-repo/scripts/verify-gce-arm64.sh /mnt/host/source/src/build/images/arm64-usr/stable-9999.0.1-a1 /mnt/host/source/src/build/images/arm64-usr/stable-9999.0.1-a1/disk-verify/disk.raw" \
   "$(sed -E 's/ -m [^ ]+//; s/ (nice -n 10 ionice -c 2 -n 7)//' "$STUB_LOG")"
+assert_eq "no host credentials reach run_sdk_container (four calls)" "4 4" \
+  "$(wc -l <"$STUB_LOG.env") $(grep -c "^HOME=$T/fork/.sdk-home SSH_AUTH_SOCK= GOOGLE_APPLICATION_CREDENTIALS=\$" "$STUB_LOG.env")"
 assert_ok "commands run niced by default" grep -q ' nice -n 10 ionice -c 2 -n 7 ./build_packages' "$STUB_LOG"
 assert_ok "the repository is mounted read-only for the verification" grep -q -- "-m $ROOT:/mnt/host/images-repo:ro" "$STUB_LOG"
 assert_ok "evidence: kernel config" grep -q '^CONFIG_GVE=m' "$T/out.evidence/flatcar_production_image_kernel_config.txt"
 assert_ok "evidence: initrd contents and verify log" test -s "$T/out.evidence/flatcar_production_image_realinitrd_contents.txt" -a -s "$T/out.evidence/verify.log"
 assert_ok "evidence: package list" grep -q 'coreos-kernel-6.12.114-r1' "$T/out.evidence/flatcar_production_image_packages.txt"
-assert_fails "the extracted disk is removed from the build directory" test -e "$T/fork/__build__/images/arm64-usr/stable-9999.0.1-a1/disk-verify"
+assert_fails "the extracted disk is removed from the build directory" test -e "$T/fork/__build__/images/images/arm64-usr/stable-9999.0.1-a1/disk-verify"
 
 echo "-- build with host verification, revision and no nice"
 : >"$STUB_LOG"
@@ -153,7 +157,7 @@ mkfork "$T/fork-v2"; g tag stable-9999.0.2 stable-9999.0.1
 assert_fails_with "version.txt of another version" "says 9999.0.1, not 9999.0.2" env FORK_DIR="$T/fork-v2" OUTDIR="$T/o4" "$SCRIPTS/build-gce-arm64.sh" stable 9999.0.2
 mkfork "$T/fork-lts"; g tag lts-9999.0.1 stable-9999.0.1
 assert_ok "channel decides the upstream tag and the group" env FORK_DIR="$T/fork-lts" OUTDIR="$T/o5" "$SCRIPTS/build-gce-arm64.sh" lts 9999.0.1
-assert_ok "lts group image directory" test -d "$T/fork-lts/__build__/images/arm64-usr/lts-9999.0.1-a1"
+assert_ok "lts group image directory" test -d "$T/fork-lts/__build__/images/images/arm64-usr/lts-9999.0.1-a1"
 assert_fails_with "not enough free space" "GB free" env FORK_DIR="$T/fork" OUTDIR="$T/o6" MIN_FREE_GB=99999999 "$SCRIPTS/build-gce-arm64.sh" stable 9999.0.1
 assert_fails_with "fork repository of another owner" "invalid fork repository" env FORK_DIR="$T/fork" OUTDIR="$T/o7" FORK_REPOSITORY=evil/x "$SCRIPTS/build-gce-arm64.sh" stable 9999.0.1
 assert_fails_with "bad container name" "invalid container name" env FORK_DIR="$T/fork" OUTDIR="$T/o8" CONTAINER='x;y' "$SCRIPTS/build-gce-arm64.sh" stable 9999.0.1
@@ -165,7 +169,7 @@ assert_fails_with "an image without the arm64 console fails" "ttyAMA0" env STUB_
 unset VERIFY_RUNNER
 
 echo "-- verify-gce-arm64.sh"
-good=$T/fork/__build__/images/arm64-usr/stable-9999.0.1-a1
+good=$T/fork/__build__/images/images/arm64-usr/stable-9999.0.1-a1
 assert_ok "good image passes" "$SCRIPTS/verify-gce-arm64.sh" "$good" "$T/good.disk"
 out=$("$SCRIPTS/verify-gce-arm64.sh" "$good" "$T/good.disk" 2>&1)
 assert_eq "all eight checks reported" "8" "$(grep -c '^ok:' <<<"$out")"
