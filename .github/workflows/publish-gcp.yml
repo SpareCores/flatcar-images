@@ -4,6 +4,10 @@ name: publish-gcp
 # in the owner's GCP project (docs/gcp-setup.md). Runs after build.yml succeeds
 # (a release created with the workflow token does not trigger a release event,
 # so workflow_run is used) and by hand for any existing release.
+# The GCE arm64 artifact is added to the release by build-gce-arm64.yml (by hand,
+# docs/gce-arm64.md), so after a build the release has none yet and the
+# automatic run ends with a notice: dispatch this workflow by hand once the
+# release has the artifact.
 #
 # Configuration comes only from repository variables: GCP_PROJECT_ID,
 # GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_BUCKET and
