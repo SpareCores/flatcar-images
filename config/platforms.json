@@ -38,6 +38,8 @@
       "oem_id": "gce",
       "arches": ["arm64"],
       "skip_channels": [],
+      "built_by": "build-gce-arm64.yml",
+      "built_by_reason": "Flatcar's arm64 kernel has no gVNIC driver, so the generic image with the OEM id patched cannot boot on GCE; the image comes from a kernel fork (docs/gce-arm64.md)",
       "grub_extra": [],
       "formats": [
         { "ext": "tar.gz", "kind": "gce-tar", "publish": true }

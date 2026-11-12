@@ -1,0 +1,4 @@
+# Labels of the organisation's self-hosted runner (build-gce-arm64.yml).
+self-hosted-runner:
+  labels:
+    - workhorse

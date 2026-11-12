@@ -27,6 +27,11 @@ valid_platform() {
   jq -e --arg p "$1" '.platforms[$p]' "$PLATFORMS_JSON" >/dev/null || die "unknown platform: $1"
 }
 
+# The kernel fork of the GCE arm64 build is run on a shared self-hosted runner,
+# so it must be a repository of this organisation.
+valid_fork_repository() { [[ $1 =~ ^SpareCores/[A-Za-z0-9._-]+$ && $1 != *..* ]] || die "invalid fork repository (must be SpareCores/<name>): $1"; }
+valid_fork_ref() { [[ $1 =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ && $1 != *..* && $1 != *.lock && $1 != */ ]] || die "invalid fork ref: $1"; }
+
 # platform_field PLATFORM JQ_EXPR
 platform_field() { jq -r --arg p "$1" ".platforms[\$p] | $2" "$PLATFORMS_JSON"; }
 
@@ -42,8 +47,10 @@ release_url() {
   fi
 }
 
-# artifact_name PLATFORM CHANNEL VERSION ARCH EXT
-artifact_name() { printf 'flatcar-%s-%s-%s-%s.%s' "$1" "$2" "$3" "$4" "$5"; }
+# artifact_name PLATFORM CHANNEL VERSION ARCH EXT [REVISION]
+# The revision (r2, ...) is part of the name only for artifacts that are built
+# again for the same version in a release of their own (GCE arm64).
+artifact_name() { printf 'flatcar-%s-%s-%s%s-%s.%s' "$1" "$2" "$3" "${6:+-$6}" "$4" "$5"; }
 
 # release_tag CHANNEL VERSION [REVISION]
 release_tag() { printf '%s-%s%s' "$1" "$2" "${3:+-$3}"; }

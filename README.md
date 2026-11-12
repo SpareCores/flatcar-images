@@ -2,7 +2,7 @@
 
 [Flatcar Container Linux](https://www.flatcar.org/) images for the cloud vendors that have no official Flatcar image, built from Flatcar's own release files and published as signed GitHub releases.
 
-A generic Flatcar image has no OEM id: on a vendor without an official image it runs Ignition as `qemu` (fw_cfg) and boots unconfigured. The only thing that differs between an official OEM image and a generic one is one file on the OEM partition, `grub.cfg` with `set oem_id="<id>"`. This repository downloads the official generic image, verifies it, writes that one file, and repackages the disk in the format each vendor imports. Nothing else in the image changes (the build checks that everything outside the OEM partition is byte-identical to Flatcar's image).
+A generic Flatcar image has no OEM id: on a vendor without an official image it runs Ignition as `qemu` (fw_cfg) and boots unconfigured. The only thing that differs between an official OEM image and a generic one is one file on the OEM partition, `grub.cfg` with `set oem_id="<id>"`. This repository downloads the official generic image, verifies it, writes that one file, and repackages the disk in the format each vendor imports. Nothing else in the image changes (the build checks that everything outside the OEM partition is byte-identical to Flatcar's image). The one exception is Google Cloud arm64: Flatcar's arm64 kernel has no gVNIC driver, which every GCE arm64 machine type needs, so that image is built from source with a kernel fork ([docs/gce-arm64.md](docs/gce-arm64.md)).
 
 It is part of how [SpareCores/scarpenter](https://github.com/SpareCores/scarpenter) finds a boot image per vendor, and anyone else can use the releases the same way. It holds no cloud credentials (the GCP publishing uses keyless federation) and never boots an image on a vendor.
 
@@ -24,11 +24,11 @@ When Flatcar ships an official image for a platform, this repository stops build
 | UpCloud | `upcloud` | amd64 | `flatcar-upcloud-<channel>-<version>-amd64.img.gz` (raw, gzip) | stable, beta, alpha. **Not LTS**: the LTS release ships an Ignition without the `upcloud` platform (needs 2.23 or later). |
 | Vultr | `vultr` | amd64 | `flatcar-vultr-<channel>-<version>-amd64.img.gz` (raw, gzip) | all |
 | Alibaba Cloud | `aliyun` | amd64, arm64 | `flatcar-aliyun-<channel>-<version>-<arch>.qcow2` (compressed) and `.img.gz` (raw, gzip) | all |
-| Google Cloud | `gce` | arm64 | `flatcar-gce-<channel>-<version>-arm64.tar.gz` (one sparse `disk.raw`, whole GiB, `oldgnu` tar) | all |
+| Google Cloud | `gce` | arm64 | `flatcar-gce-<channel>-<version>[-<revision>]-arm64.tar.gz` (one sparse `disk.raw`, whole GiB, `oldgnu` tar), built from a kernel fork by the `build-gce-arm64` workflow, by hand | all |
 
-Stable and LTS are built automatically when Flatcar releases them (a daily check, see below). Beta and alpha are built on request: run the `build` workflow by hand, or set `"track": true` in `config/channels.json`.
+Stable and LTS are built automatically when Flatcar releases them (a daily check, see below), except the GCE arm64 image, which is built by hand with `build-gce-arm64.yml` and added to the release of its version. Beta and alpha are built on request: run the `build` workflow by hand, or set `"track": true` in `config/channels.json`.
 
-One release per Flatcar version, tag `<channel>-<version>` (for example `stable-4757.2.3`). A version is never rebuilt over an existing release, so an image someone created from an artifact always matches its checksum; a fix is a new release with a suffix (`stable-4757.2.3-r2`). Releases are not deleted.
+One release per Flatcar version, tag `<channel>-<version>` (for example `stable-4757.2.3`). A version is never rebuilt over an existing release, so an image someone created from an artifact always matches its checksum; a fix is a new release with a suffix (`stable-4757.2.3-r2`). Releases are not deleted. The one exception: `build-gce-arm64.yml` replaces the GCE arm64 artifact of an existing release (the earlier one was the generic image with the OEM id patched, which cannot boot on GCE), and updates `manifest.json`, `SHA256SUMS` and the signatures with it.
 
 Raw images (about 8.5 GB for amd64 stable 4757.2.3) do not fit a release asset (2 GiB), so only compressed artifacts are released. `make build ... ALL_FORMATS=1` also builds the raw Vultr image for hosting elsewhere.
 
@@ -50,13 +50,15 @@ Each release has `manifest.json`, which maps the pinned Flatcar version to its a
 }
 ```
 
+The GCE arm64 artifact has no `source_image` (it is not made from the official image) but `source`: `{ "repository": "SpareCores/flatcar-scripts", "ref": "gce-arm64", "commit": "...", "base_tag": "stable-4757.2.3", ... }`, the fork it was built from.
+
 `source_image` is the official `flatcar_production_image.bin.bz2` the artifact was made from, with the SHA512 Flatcar signed. The artifact URL is stable: `https://github.com/SpareCores/flatcar-images/releases/download/<channel>-<version>/<artifact>`.
 
 Name the image you create in your account so that a pinned version maps to exactly one image (the conventions SCarpenter reads): UpCloud template labels `scarpenter-image=flatcar`, `flatcar-channel`, `flatcar-version`, `flatcar-arch`, `flatcar-tier` and title `flatcar-<channel>-<version>-amd64-<tier>`; Vultr snapshot description `flatcar-<channel>-<version>-<arch>`; Alibaba image name `Flatcar-<channel>-<version>-<arch>` with tags `flatcar-channel`, `flatcar-version`, `arch`, `built-by`. See the SCarpenter documentation for the full contract.
 
 ## Verify a release
 
-Every file, `SHA256SUMS` and `manifest.json` have a keyless [Sigstore](https://www.sigstore.dev/) bundle (`<file>.sigstore.json`), signed by this repository's `build` workflow through GitHub's OIDC identity. No key to fetch; you need [cosign](https://github.com/sigstore/cosign) v3 or later (the bundles are in the Sigstore bundle format that cosign v3 writes; cosign 2.5 and 2.6 read them only with `--new-bundle-format`). The certificate identity is the `build` workflow on `main` and the issuer is GitHub Actions; `build.yml` refuses to release from any other ref. Download the files you want, `SHA256SUMS` and the `.sigstore.json` bundles into one directory, then:
+Every file, `SHA256SUMS` and `manifest.json` have a keyless [Sigstore](https://www.sigstore.dev/) bundle (`<file>.sigstore.json`), signed by this repository's `build` workflow through GitHub's OIDC identity. No key to fetch; you need [cosign](https://github.com/sigstore/cosign) v3 or later (the bundles are in the Sigstore bundle format that cosign v3 writes; cosign 2.5 and 2.6 read them only with `--new-bundle-format`). The certificate identity is the `build` workflow on `main` (or, for the GCE arm64 artifact, `manifest.json` and `SHA256SUMS` of a release it was added to, the `build-gce-arm64` workflow on `main`) and the issuer is GitHub Actions; both workflows refuse to release from any other ref. Download the files you want, `SHA256SUMS` and the `.sigstore.json` bundles into one directory, then:
 
 ```sh
 scripts/verify.sh ./download-dir
@@ -66,7 +68,7 @@ or by hand:
 
 ```sh
 cosign verify-blob --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity-regexp '^https://github\.com/SpareCores/flatcar-images/\.github/workflows/build\.yml@refs/heads/main$' \
+  --certificate-identity-regexp '^https://github\.com/SpareCores/flatcar-images/\.github/workflows/(build|build-gce-arm64)\.yml@refs/heads/main$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 ```
@@ -91,13 +93,13 @@ None of this is automated here; it is what your infrastructure as code does once
 | UpCloud amd64 | implemented, tested on synthetic images | not yet verified live |
 | Vultr amd64 | implemented, tested on synthetic images | not yet verified live; import format open |
 | Alibaba amd64, arm64 | implemented, tested on synthetic images | not yet verified live; import format open |
-| GCE arm64 | implemented (`tar.gz` with `disk.raw`) and published by `publish-gcp.yml`, tested on synthetic images and a stubbed `gcloud` | not yet verified live; nothing has been published yet |
+| GCE arm64 | built from the kernel fork by `build-gce-arm64.yml` (`tar.gz` with `disk.raw`), published by `publish-gcp.yml`; tested against a stub SDK and a stubbed `gcloud` | the workflow has not been run yet; the image is unbooted (the generic image was booted and cannot work: no gVNIC) |
 
 "Boot not yet verified live" means the OEM id patch is tested (the file is written, the rest of the disk is unchanged, a real Flatcar signature verifies) and a patched stable 4757.2.3 amd64 image booted locally in QEMU (BIOS) with `flatcar.oem.id=upcloud` on the kernel command line, but nobody has run Ignition on the vendor's metadata service with these images. Each vendor's boot check belongs to SCarpenter's vendor test lanes.
 
 ### GCP arm64 publishing
 
-Flatcar publishes no GCE arm64 image. This repository builds the `tar.gz` and, when its owner has set the repository variables, `publish-gcp.yml` turns each release into a public image in a GCP project: workflow after `build` succeeds (or by hand for an existing release), keyless login through workload identity federation (`id-token: write`, `contents: read`, no secret, no key), the release files verified with `scripts/verify.sh`, then `scripts/publish-gcp.sh`:
+Flatcar publishes no GCE arm64 image, and its arm64 kernel cannot boot on GCE (no gVNIC driver). The `tar.gz` is built from a kernel fork by `build-gce-arm64.yml` ([docs/gce-arm64.md](docs/gce-arm64.md): why, how to rebuild, how to rebase the fork onto a new release, and that nodes must disable Flatcar auto-updates). Dispatch `publish-gcp.yml` for the version once that release has the artifact. When its owner has set the repository variables, `publish-gcp.yml` turns each release into a public image in a GCP project: workflow after `build` succeeds (or by hand for an existing release), keyless login through workload identity federation (`id-token: write`, `contents: read`, no secret, no key), the release files verified with `scripts/verify.sh`, then `scripts/publish-gcp.sh`:
 
 1. Upload the tarball to the bucket (`import/<image>.tar.gz`).
 2. `gcloud compute images create flatcar-<channel>-<major>-<minor>-<patch>-arm64` (`-rN` for a release revision) with `--architecture=ARM64`, guest OS features `UEFI_COMPATIBLE`, `VIRTIO_SCSI_MULTIQUEUE`, `GVNIC`, family `flatcar-<channel>-arm64`, labels `flatcar-channel`, `flatcar-version` (dots as dashes) and `built-by=spare-cores`, in the multi-region storage location.
@@ -108,7 +110,7 @@ It is idempotent: an image that exists is not created again (its sharing is stil
 
 What the workflow expects to exist in the GCP project (managed in Spare Cores' own infrastructure code): [docs/gcp-setup.md](docs/gcp-setup.md).
 
-Open (**unverified**): whether `gce` is the right OEM id for Ignition's `gcp` platform on arm64, the serial console arguments, and that the image boots at all. There is no arm64 `oem-gce` sysext, so no guest agent, no OS Login and no `/dev/disk/by-id/google-*` udev rules.
+The fork image has the `oem-gce` sysext for arm64 (the legacy Python guest scripts, the `/dev/disk/by-id/google-*` udev rules), not the Go guest agent and no OS Login module, as on amd64. Open (**unverified**): that the image built from the fork boots on T2A and C4A, with Ignition on the `gcp` platform and the `ttyAMA0` console, and that the guest scripts run on arm64. The build only checks that the driver, the udev rules and the arm64 console are in the image.
 
 ## How it works
 
@@ -122,17 +124,21 @@ scripts/matrix.sh        build matrix of a channel; UpCloud skips LTS
 scripts/track.sh         tracked releases without a GitHub release
 scripts/verify.sh        what a consumer runs
 scripts/publish-gcp.sh   create and share the GCE arm64 image from a release
-config/platforms.json    per vendor: OEM id, architectures, formats, skipped channels
+scripts/build-gce-arm64.sh    build the GCE arm64 image from the kernel fork (SDK container)
+scripts/verify-gce-arm64.sh   check driver, initrd, OEM sysext and console in that image
+scripts/release-gce-arm64.sh  merge its artifact into the manifest and checksums of a release
+scripts/cleanup-gce-arm64.sh  remove the container, loop devices and run directory
+config/platforms.json    per vendor: OEM id, architectures, formats, skipped channels, built_by (gce)
 config/channels.json     channels built automatically
 ```
 
 Patching needs no root. The OEM partition (GPT name `OEM`, partition 6) is cut out of the disk with `dd` using offsets from `sfdisk --json` and copied back with `dd conv=notrunc`. In current Flatcar it is btrfs, for which no user-space writer exists: its files are extracted with `btrfs restore` and the filesystem is recreated with `mkfs.btrfs --rootdir` at the same size, with the same label, UUID, node size, mixed block groups and block group tree, under `fakeroot` so every file is owned by root. ext4 (`debugfs`) and FAT (mtools) are handled too. Loop mounts and guestfish would need root or a FUSE/libguestfs appliance; this runs identically on GitHub-hosted runners and a laptop. The script digests everything outside the partition before and after, checks the filesystem (`btrfs check`, `e2fsck`), checks that `grub.cfg` is root-owned with mode 0644, and reads it back.
 
-GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads each tracked channel's `version.txt` from the Flatcar release server, dispatches `build.yml` for versions without a release), `build.yml` (build matrix, then a `sign` job with `id-token: write`, then a `release` job, the only one with `contents: write`; a failed build opens one issue per version, and later failures of the same version, such as the next day's retry by `track-releases.yml`, comment on it). `publish-gcp.yml` (after `build` succeeds, or by hand; the only workflow that talks to a cloud, with `id-token: write` and `contents: read`, configured by repository variables and skipped while they are unset). Actions are pinned by commit SHA, no secrets are used.
+GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads each tracked channel's `version.txt` from the Flatcar release server, dispatches `build.yml` for versions without a release), `build.yml` (build matrix, then a `sign` job with `id-token: write`, then a `release` job, the only one with `contents: write`; a failed build opens one issue per version, and later failures of the same version, such as the next day's retry by `track-releases.yml`, comment on it). `build-gce-arm64.yml` (by hand only; builds the GCE arm64 image from the kernel fork on the organisation's self-hosted runner, signs it and adds it to the release; see [docs/gce-arm64.md](docs/gce-arm64.md)). `publish-gcp.yml` (after `build` succeeds, or by hand; the only workflow that talks to a cloud, with `id-token: write` and `contents: read`, configured by repository variables and skipped while they are unset). Actions are pinned by commit SHA, no secrets are used.
 
 ## Develop
 
-Needs `bash`, `jq`, `curl`, `gpg`, `bzip2`, `gzip`, GNU `tar`, `sfdisk` and `sgdisk` (`gdisk`), `btrfs-progs` (6.1 or later, for the block group tree), `fakeroot`, `e2fsprogs`, `qemu-img`, and `mtools` and `dosfstools` for the FAT tests. `shellcheck` and `actionlint` for `make lint`.
+Needs `bash`, `jq`, `curl`, `git`, `gpg`, `bzip2`, `gzip`, GNU `tar`, `sfdisk` and `sgdisk` (`gdisk`), `btrfs-progs` (6.1 or later, for the block group tree), `fakeroot`, `e2fsprogs`, `qemu-img`, and `mtools` and `dosfstools` for the FAT tests. `shellcheck` and `actionlint` for `make lint`.
 
 ```sh
 make lint

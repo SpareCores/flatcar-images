@@ -22,6 +22,9 @@ workdir=${WORKDIR:-$REPO_ROOT/work}
 cache=${CACHE_DIR:-$REPO_ROOT/cache}
 need jq bzip2 dd cp
 
+if [[ -n $(platform_field "$vendor" '.built_by // empty') ]]; then
+  die "$vendor is not built here but by $(platform_field "$vendor" .built_by): $(platform_field "$vendor" .built_by_reason)"
+fi
 jq -e --arg p "$vendor" --arg a "$arch" '.platforms[$p].arches | index($a)' "$PLATFORMS_JSON" >/dev/null ||
   die "$vendor is not built for $arch"
 if jq -e --arg p "$vendor" --arg c "$channel" '.platforms[$p].skip_channels | index($c)' "$PLATFORMS_JSON" >/dev/null; then

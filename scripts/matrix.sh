@@ -4,7 +4,8 @@
 # usage: matrix.sh CHANNEL [VENDORS]
 #
 # VENDORS is an optional comma-separated filter. Platforms that skip the
-# channel (UpCloud on LTS) are left out.
+# channel (UpCloud on LTS) are left out, and so are platforms with "built_by"
+# (an artifact that another workflow builds, GCE arm64).
 set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -20,6 +21,7 @@ m=$(jq -c --arg c "$channel" --arg v "$vendors" '
   | {include: [.platforms | to_entries[]
       | select(($want | length) == 0 or (.key as $k | $want | index($k)))
       | select(.value.skip_channels | index($c) | not)
+      | select(.value.built_by | not)
       | .key as $vendor | .value.arches[] | {vendor: $vendor, arch: .}]}' "$PLATFORMS_JSON")
 [[ $(jq '.include | length' <<<"$m") -gt 0 ]] || die "empty matrix for channel $channel, vendors '${vendors:-all}'"
 printf '%s\n' "$m"
