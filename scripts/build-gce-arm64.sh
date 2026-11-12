@@ -114,16 +114,34 @@ mkdir -p "$outdir" "$evidence"
 # SSH agent socket and the gcloud credentials (and writes a boto file next to
 # them) into the container when it finds them. On the shared runner none of
 # the host's credentials belong in the build: HOME points into the run
-# directory and the agent and credential variables are unset (DOCKER_CONFIG
-# keeps the Docker client configuration of the real home).
+# directory and the agent and credential variables are unset.
 sdk_home=$fork/.sdk-home
-mkdir -p "$sdk_home"
+mkdir -p "$sdk_home/.docker"
+# The SDK refuses to run as root (it creates the build user from SDK_USER_ID,
+# which run_sdk_container takes from `id -u`). The shared runner runs jobs as
+# root and no account may be added to it, so as root the SDK steps run as a
+# numeric uid:gid without a passwd entry (SDK_UID, default 4757:4757) that is
+# in no group but docker (the Docker socket is all it needs; the container is
+# privileged anyway, as in flatcar/scripts' own CI). The fork directory is
+# owned by it, the docker client configuration is an empty one in .sdk-home
+# (no credentials of root; the SDK image is public).
+sdk_uid=${SDK_UID:-4757}
+sdk_prefix=()
+if [[ $(id -u) -eq 0 ]]; then
+  [[ $sdk_uid =~ ^[1-9][0-9]{3,}$ ]] || die "invalid SDK_UID: $sdk_uid"
+  need setpriv getent chown
+  docker_gid=$(getent group docker | cut -d: -f3)
+  [[ $docker_gid =~ ^[0-9]+$ ]] || die "no docker group: the SDK steps need access to the Docker socket"
+  if getent passwd "$sdk_uid" >/dev/null || getent group "$sdk_uid" >/dev/null; then
+    die "uid/gid $sdk_uid belongs to an account: set SDK_UID to an unused number"
+  fi
+  chown -R "$sdk_uid:$sdk_uid" "$fork"
+  sdk_prefix=(setpriv --reuid="$sdk_uid" --regid="$sdk_uid" --clear-groups --groups="$docker_gid")
+fi
 # shellcheck disable=SC2086 # nice_cmd is a word list
 sdk() {
   (cd "$fork" &&
-    env -u SSH_AUTH_SOCK -u GNUPGHOME -u GOOGLE_APPLICATION_CREDENTIALS -u BOTO_PATH \
-      DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME:-/root}/.docker}" HOME="$sdk_home" \
-      ./run_sdk_container -U -n "$container" -m "$REPO_ROOT:/mnt/host/images-repo:ro" $nice_cmd "$@")
+    env -u SSH_AUTH_SOCK -u GNUPGHOME -u GOOGLE_APPLICATION_CREDENTIALS -u BOTO_PATH       "${sdk_prefix[@]}"       env DOCKER_CONFIG="$sdk_home/.docker" HOME="$sdk_home"       ./run_sdk_container -U -n "$container" -m "$REPO_ROOT:/mnt/host/images-repo:ro" $nice_cmd "$@")
 }
 
 # --- 2. build
