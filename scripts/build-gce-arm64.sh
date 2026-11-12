@@ -136,7 +136,7 @@ if [[ $(id -u) -eq 0 ]]; then
     die "uid/gid $sdk_uid belongs to an account: set SDK_UID to an unused number"
   fi
   chown -R "$sdk_uid:$sdk_uid" "$fork"
-  sdk_prefix=(setpriv --reuid="$sdk_uid" --regid="$sdk_uid" --clear-groups --groups="$docker_gid")
+  sdk_prefix=(setpriv --reuid="$sdk_uid" --regid="$sdk_uid" --groups="$docker_gid")
 fi
 # shellcheck disable=SC2086 # nice_cmd is a word list
 sdk() {

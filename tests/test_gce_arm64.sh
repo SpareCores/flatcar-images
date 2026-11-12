@@ -131,6 +131,16 @@ assert_eq "SDK commands in order, with -U and the container" \
   "$(sed -E 's/ -m [^ ]+//; s/ (nice -n 10 ionice -c 2 -n 7)//' "$STUB_LOG")"
 assert_eq "no host credentials reach run_sdk_container (four calls)" "4 4" \
   "$(wc -l <"$STUB_LOG.env") $(grep -c "^HOME=$T/fork/.sdk-home SSH_AUTH_SOCK= GOOGLE_APPLICATION_CREDENTIALS=\$" "$STUB_LOG.env")"
+# The root path of build-gce-arm64.sh drops privileges with setpriv; the tests
+# do not run as root, so only the option parsing is checked: setpriv must get
+# as far as the setresuid/setgroups call (which fails without privileges), not
+# reject the arguments.
+opts=$(sed -n 's/^  sdk_prefix=(setpriv \(.*\))$/\1/p' "$SCRIPTS/build-gce-arm64.sh" | sed 's/"\$sdk_uid"/4757/g; s/"\$docker_gid"/988/')
+assert_ok "setpriv options found in the build script" test -n "$opts"
+# shellcheck disable=SC2086
+setpriv $opts true >"$T/.setpriv" 2>&1 || true
+assert_ok "setpriv accepts the options of the build script" bash -c '! grep -qiE "mutually exclusive|unrecognized|invalid|usage" "$1"' _ "$T/.setpriv"
+
 assert_ok "commands run niced by default" grep -q ' nice -n 10 ionice -c 2 -n 7 ./build_packages' "$STUB_LOG"
 assert_ok "the repository is mounted read-only for the verification" grep -q -- "-m $ROOT:/mnt/host/images-repo:ro" "$STUB_LOG"
 assert_ok "evidence: kernel config" grep -q '^CONFIG_GVE=m' "$T/out.evidence/flatcar_production_image_kernel_config.txt"
