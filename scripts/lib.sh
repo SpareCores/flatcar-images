@@ -42,8 +42,10 @@ release_url() {
   fi
 }
 
-# artifact_name PLATFORM CHANNEL VERSION ARCH EXT
-artifact_name() { printf 'flatcar-%s-%s-%s-%s.%s' "$1" "$2" "$3" "$4" "$5"; }
+# artifact_name PLATFORM CHANNEL VERSION ARCH EXT [REVISION]
+# The revision (r2, ...) is part of the name only for artifacts that are built
+# again for the same version in a release of their own (GCE arm64).
+artifact_name() { printf 'flatcar-%s-%s-%s%s-%s.%s' "$1" "$2" "$3" "${6:+-$6}" "$4" "$5"; }
 
 # release_tag CHANNEL VERSION [REVISION]
 release_tag() { printf '%s-%s%s' "$1" "$2" "${3:+-$3}"; }

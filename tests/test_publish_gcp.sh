@@ -78,7 +78,10 @@ assert_ok "sharing is ensured again" grep -q 'add-iam-policy-binding' "$T/s/call
 
 echo "-- revision"
 fresh
+cp "$art/$ARTIFACT" "$art/flatcar-gce-stable-1.2.3-r2-arm64.tar.gz"
+(cd "$art" && sha256sum "$ARTIFACT" flatcar-gce-stable-1.2.3-r2-arm64.tar.gz >SHA256SUMS)
 assert_ok "revision" run stable 1.2.3 r2
+assert_ok "revision: the artifact with the revision in its name is uploaded" grep -q "^storage cp .*/flatcar-gce-stable-1.2.3-r2-arm64.tar.gz gs://test-bucket/import/flatcar-stable-1-2-3-arm64-r2.tar.gz " "$T/s/calls.log"
 assert_eq "image name has the revision" READY "$(cat "$T/s/images/flatcar-stable-1-2-3-arm64-r2" 2>/dev/null)"
 
 echo "-- resume a half-run"

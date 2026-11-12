@@ -38,6 +38,18 @@ assert_eq "disk.raw is padded to a whole GiB" "1073741824" "$(stat -c %s "$T/x/d
 assert_ok "disk.raw starts with the patched image" cmp -n 67108864 "$d" "$T/x/disk.raw"
 assert_eq "tar uses the oldgnu format" "ustar " "$(gzip -dc "$tarball" | dd bs=1 skip=257 count=6 status=none)"
 
+echo "-- gce tar built from a fork: revision in the name, no source image, fork recorded"
+out5=$T/out5
+echo '{"repository":"SpareCores/flatcar-scripts","ref":"gce-arm64","commit":"abc123"}' >"$T/fork.json"
+assert_ok "package gce with revision and fork source" env PACKAGE_REVISION=r2 PACKAGE_SOURCE_JSON="$T/fork.json" \
+  "$SCRIPTS/package.sh" "$d" gce stable 1.2.3 arm64 "$out5" -
+assert_ok "revision is part of the artifact name" test -s "$out5/flatcar-gce-stable-1.2.3-r2-arm64.tar.gz"
+m5=$out5/flatcar-gce-stable-1.2.3-r2-arm64.tar.gz.meta.json
+assert_eq "meta: fork source recorded" "SpareCores/flatcar-scripts gce-arm64 abc123" "$(jq -r '"\(.source.repository) \(.source.ref) \(.source.commit)"' "$m5")"
+assert_eq "meta: no source_image without a source record" "false" "$(jq 'has("source_image")' "$m5")"
+assert_fails "bad revision" env PACKAGE_REVISION=x "$SCRIPTS/package.sh" "$d" gce stable 1.2.3 arm64 "$T/o6" -
+assert_fails "missing source record" "$SCRIPTS/package.sh" "$d" gce stable 1.2.3 arm64 "$T/o6" "$T/nope.json"
+
 echo "-- errors"
 assert_fails "unknown platform" "$SCRIPTS/package.sh" "$d" nope stable 1.2.3 amd64 "$T/o4" "$T/src.json"
 assert_fails "missing image" "$SCRIPTS/package.sh" "$T/none" vultr stable 1.2.3 amd64 "$T/o4" "$T/src.json"

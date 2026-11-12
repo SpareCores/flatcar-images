@@ -7,6 +7,10 @@
 # artifacts and manifest.json. manifest.json maps the Flatcar version to every
 # artifact: vendor, OEM id, format, size, sha256, URL and the digest of the
 # source image.
+#
+# Env: MANIFEST_PARTIAL=1 when DIR holds only some of the artifacts listed in
+# the meta files (release-gce-arm64.sh adds one artifact to a release): the
+# SHA256SUMS check then skips the files that are not there.
 set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -36,5 +40,5 @@ jq -s --arg repo "$REPOSITORY" --arg tag "$tag" --arg channel "$channel" \
   printf '%s  %s\n' "$(sha256sum manifest.json | cut -d' ' -f1)" manifest.json
 ) >"$dir/SHA256SUMS"
 # Fail early if a listed file is missing or differs.
-(cd "$dir" && sha256sum --check --quiet SHA256SUMS)
+(cd "$dir" && sha256sum --check --quiet ${MANIFEST_PARTIAL:+--ignore-missing} SHA256SUMS)
 log "wrote $dir/manifest.json and $dir/SHA256SUMS"

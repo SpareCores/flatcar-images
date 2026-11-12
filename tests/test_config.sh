@@ -23,6 +23,7 @@ assert_ok "key file is in the repository" test -s "$ROOT/$(jq -r .signing_key.fi
 
 # Artifact names follow flatcar-<platform>-<channel>-<version>-<arch>.<ext>.
 assert_eq "artifact name" "flatcar-upcloud-stable-4757.2.3-amd64.img.gz" "$(artifact_name upcloud stable 4757.2.3 amd64 img.gz)"
+assert_eq "artifact name with revision" "flatcar-gce-stable-4757.2.3-r2-arm64.tar.gz" "$(artifact_name gce stable 4757.2.3 arm64 tar.gz r2)"
 assert_eq "release tag" "stable-4757.2.3" "$(release_tag stable 4757.2.3)"
 assert_eq "release tag with revision" "stable-4757.2.3-r2" "$(release_tag stable 4757.2.3 r2)"
 bad=$(jq -r '.platforms | to_entries[] | .key as $p | .value.arches[] as $a | .value.formats[]

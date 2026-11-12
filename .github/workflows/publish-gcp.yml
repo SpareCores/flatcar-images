@@ -90,7 +90,7 @@ jobs:
           valid_channel "$channel"; valid_version "$version"
           [[ ${revision:-} =~ ^(r[0-9]+)?$ ]] || die "invalid revision: ${revision:-}"
           tag=$(release_tag "$channel" "$version" "${revision:-}")
-          artifact=$(artifact_name gce "$channel" "$version" arm64 tar.gz)
+          artifact=$(artifact_name gce "$channel" "$version" arm64 tar.gz "${revision:-}")
           # A failing gh call (no such release, API error) fails the run instead of skipping it.
           assets=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name') ||
             die "cannot read release $tag"

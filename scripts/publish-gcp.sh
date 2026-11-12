@@ -62,7 +62,7 @@ family=flatcar-$channel-arm64
 labels=flatcar-channel=$channel,flatcar-version=$dashed,built-by=spare-cores
 object=import/$name.tar.gz
 uri=gs://$bucket/$object
-artifact=$(artifact_name gce "$channel" "$version" arm64 tar.gz)
+artifact=$(artifact_name gce "$channel" "$version" arm64 tar.gz "$revision")
 tag=$(release_tag "$channel" "$version" "$revision")
 
 # gc ARGS...: gcloud against the project.

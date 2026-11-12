@@ -11,15 +11,17 @@
 # format; cosign 2.5 and 2.6 need --new-bundle-format). Set
 # VERIFY_SKIP_SIGNATURES=1 to check the sums only.
 #
-# Env: CERT_IDENTITY_REGEXP (default: the build workflow of this repository on
-# main), CERT_OIDC_ISSUER (default: GitHub Actions).
+# Env: CERT_IDENTITY_REGEXP (default: the build or build-gce-arm64 workflow of
+# this repository on main), CERT_OIDC_ISSUER (default: GitHub Actions).
+# build-gce-arm64 signs the GCE arm64 artifact, manifest.json and SHA256SUMS of
+# a release it adds that artifact to; build signs everything else.
 set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 [[ $# -eq 1 ]] || die "usage: verify.sh DIR"
 dir=$1
-identity=${CERT_IDENTITY_REGEXP:-^https://github\.com/SpareCores/flatcar-images/\.github/workflows/build\.yml@refs/heads/main$}
+identity=${CERT_IDENTITY_REGEXP:-^https://github\.com/SpareCores/flatcar-images/\.github/workflows/(build|build-gce-arm64)\.yml@refs/heads/main$}
 issuer=${CERT_OIDC_ISSUER:-https://token.actions.githubusercontent.com}
 need sha256sum
 [[ -f $dir/SHA256SUMS ]] || die "no SHA256SUMS in $dir"
