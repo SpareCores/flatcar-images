@@ -110,6 +110,12 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+      - name: Register the aarch64 binfmt handler (host-global until the cleanup)
+        run: |
+          source scripts/lib.sh
+          sdk=$(source "$RUN_DIR/sdk_container/.repo/manifests/version.txt"; printf '%s' "${FLATCAR_SDK_VERSION:-}")
+          valid_version "$sdk"
+          scripts/binfmt-gce-arm64.sh register "ghcr.io/flatcar/flatcar-sdk-all:$sdk" "$RUNNER_TEMP/binfmt-state"
       - name: Build, verify and package
         run: |
           export FORK_DIR="$GITHUB_WORKSPACE/$RUN_DIR" OUTDIR="$RUNNER_TEMP/out" EVIDENCE_DIR="$RUNNER_TEMP/evidence"
@@ -127,6 +133,9 @@ jobs:
           path: ${{ runner.temp }}/evidence/
           retention-days: 30
           if-no-files-found: ignore
+      - name: Unregister the aarch64 binfmt handler of this job
+        if: ${{ always() }}
+        run: scripts/binfmt-gce-arm64.sh unregister "$RUNNER_TEMP/binfmt-state"
       - name: Remove the container and the build directory
         if: ${{ always() }}
         run: scripts/cleanup-gce-arm64.sh "$GITHUB_WORKSPACE/$RUN_DIR"
