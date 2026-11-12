@@ -40,6 +40,7 @@ What it does (`scripts/build-gce-arm64.sh`):
    ./run_sdk_container -U ./build_image --board=arm64-usr --group=<channel> prod oem_sysext
    ./run_sdk_container -U ./image_to_vm.sh --board=arm64-usr --format=gce
    ```
+   It is an unofficial build in Flatcar's terms (`COREOS_OFFICIAL` is not set: an official build expects Flatcar's signing keys), so the version inside the image (`/etc/os-release`, the OEM sysext name) is `<version>+<build date>`, e.g. `4757.2.3+2026-11-12-1030`; the artifact and the release carry the plain version. Grub, shim and the kernel are signed with the SDK's development key, not Flatcar's.
    arm64 is cross-compiled. The packages come from Flatcar's binary cache for that release; the changed ones are built: the kernel cross-compile takes 30 to 60 minutes, the whole run one to two hours. `-U` makes the SDK use `version.txt` as it is: the fork's `HEAD` is not the tag, so `git describe` would give `stable-4757.2.3-4-g<hash>` and the SDK would point the binary cache at a build that does not exist.
 4. `scripts/verify-gce-arm64.sh` (in the SDK container, which has `btrfs-progs` and `sfdisk`) checks:
    - `CONFIG_GVE=m` in the kernel config `build_image` wrote for the image;
@@ -94,3 +95,7 @@ storage:
 ## The runner
 
 `build-gce-arm64.yml` is the only workflow that uses `runs-on: [self-hosted, workhorse]`. The runner is shared by the organisation, runs jobs as root and needs Docker. That is why the workflow takes `workflow_dispatch` only (never a pull request or a push, which could run code from a fork of this repository), refuses any ref but `main`, accepts only a SpareCores repository as the fork, serialises runs in the `build-gce-arm64` concurrency group and cleans up after itself. Keep it that way when changing the workflow; `tests/test_config.sh` checks the triggers, the runner use, the ref guard and the action pinning.
+
+The workflow file alone cannot keep other code off the runner: a pull request from a fork runs the workflow files of the pull request, so a fork could add its own workflow with `runs-on: [self-hosted, workhorse]`, and anyone with write access can dispatch a changed copy of this workflow from another branch. Close that in the settings: limit the organisation's runner group to the selected workflow `SpareCores/flatcar-images/.github/workflows/build-gce-arm64.yml@refs/heads/main`, and require approval for workflow runs of pull requests from all outside collaborators (repository settings, Actions).
+
+`run_sdk_container` passes the caller's `~/.gnupg`, SSH agent socket and gcloud credentials into the container when it finds them; `build-gce-arm64.sh` runs it with `HOME` inside the run directory and those variables unset, so none of the runner's credentials reach the build.
