@@ -19,7 +19,8 @@
 # notes: the release notes. Without EXISTING_NOTES_FILE the usual table
 #   (release-notes.sh); with it, the existing text. Either way a section about
 #   the GCE arm64 artifact is appended (it replaces one from an earlier build):
-#   the fork, why, and the update warning.
+#   the fork, why, and the update warning. The table row of the artifact is
+#   rewritten from the manifest (size, sha256), or added when the table has none.
 set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -66,8 +67,25 @@ case $cmd in
     manifest=$1 artifact=$2 old=${3:-}
     jq -e --arg n "$artifact" 'any(.artifacts[]; .name == $n and (.source.commit | type == "string"))' "$manifest" >/dev/null ||
       die "$artifact with a fork source is not in $manifest"
-    # A rebuild replaces the section of the previous build instead of repeating it.
-    if [[ -n $old ]]; then sed '/^### Google Cloud arm64: built from a kernel fork$/,$d' "$old"; else "$here/release-notes.sh" "$manifest"; fi
+    if [[ -n $old ]]; then
+      row=$("$here/release-notes.sh" "$manifest" "$artifact")
+      # A rebuild replaces the section of the previous build instead of repeating
+      # it (and the blank lines before it), and the table row of the artifact.
+      sed '/^### Google Cloud arm64: built from a kernel fork$/,$d' "$old" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' |
+        ROW=$row PREFIX="| \`$artifact\` |" awk '
+          index($0, ENVIRON["PREFIX"]) == 1 { lines[++n] = ENVIRON["ROW"]; last = n; done = 1; next }
+          { lines[++n] = $0; if (index($0, "| `") == 1) last = n }
+          END {
+            # a missing row goes after the last table row
+            for (i = 1; i <= n; i++) {
+              print lines[i]
+              if (!done && i == last) { print ENVIRON["ROW"]; done = 1 }
+            }
+            if (!done) { print "\n| Artifact | Vendor | OEM id | Arch | Format | Size | sha256 |\n|---|---|---|---|---|---|---|"; print ENVIRON["ROW"] }
+          }'
+    else
+      "$here/release-notes.sh" "$manifest"
+    fi
     jq -r --arg n "$artifact" '
       .artifacts[] | select(.name == $n) | .source as $s |
       "\n### Google Cloud arm64: built from a kernel fork\n",

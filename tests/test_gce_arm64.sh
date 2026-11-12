@@ -253,6 +253,29 @@ assert_eq "a rebuild replaces the section instead of repeating it" "1" "$(grep -
 assert_ok "a new release gets the usual table" grep -q '^| Artifact |' <<<"$("$SCRIPTS/release-gce-arm64.sh" notes "$T/asm/manifest.json" "$art")"
 assert_fails "an artifact without a fork source is refused" "$SCRIPTS/release-gce-arm64.sh" notes "$T/existing-manifest.json" flatcar-vultr-stable-9999.0.1-amd64.img.gz
 
+# A release as build.yml made it: the table lists the old gce row.
+"$SCRIPTS/release-notes.sh" "$T/existing-manifest.json" >"$T/built-notes.md"
+old_row=$("$SCRIPTS/release-notes.sh" "$T/existing-manifest.json" "$art")
+assert_ok "the old table has the old gce row" grep -qxF "$old_row" "$T/built-notes.md"
+new_row=$("$SCRIPTS/release-notes.sh" "$T/asm/manifest.json" "$art")
+assert_ok "the new row has the new sha256" grep -qF "\`$new_sha\`" <<<"$new_row"
+notes3=$("$SCRIPTS/release-gce-arm64.sh" notes "$T/asm/manifest.json" "$art" "$T/built-notes.md")
+assert_ok "the table row of the artifact is rewritten" grep -qxF "$new_row" <<<"$notes3"
+assert_fails "and the old row is gone" grep -qF "$old_gce_sha" <<<"$notes3"
+assert_eq "the other rows are kept" "3" "$(grep -c -e vultr -e aliyun <<<"$notes3")"
+assert_eq "the row count is unchanged" "$(grep -c '^| `flatcar-' "$T/built-notes.md")" "$(grep -c '^| `flatcar-' <<<"$notes3")"
+printf '%s\n' "$notes3" >"$T/rebuilt1.md"
+"$SCRIPTS/release-gce-arm64.sh" notes "$T/asm/manifest.json" "$art" "$T/rebuilt1.md" >"$T/rebuilt2.md"
+assert_eq "a second rebuild changes nothing (one section, one row, no extra blank lines)" "$(cat "$T/rebuilt1.md")" "$(cat "$T/rebuilt2.md")"
+grep -vF "$new_row" "$T/rebuilt1.md" >"$T/norow.md"
+assert_ok "a missing row is added" grep -qxF "$new_row" <<<"$("$SCRIPTS/release-gce-arm64.sh" notes "$T/asm/manifest.json" "$art" "$T/norow.md")"
+printf 'Flatcar stable 9999.0.1: no table.\n' >"$T/notable.md"
+assert_ok "and a missing table is added" grep -qxF "$new_row" <<<"$("$SCRIPTS/release-gce-arm64.sh" notes "$T/asm/manifest.json" "$art" "$T/notable.md")"
+rebuilt_manifest=$T/asm/manifest.json
+jq --arg c cafebabecafebabecafebabecafebabecafebabe '(.artifacts[] | select(.vendor=="gce") | .source.commit) = $c' "$rebuilt_manifest" >"$T/m-new-fork.json"
+assert_ok "the section describes the current fork commit" grep -q '@cafebabecafe' <<<"$("$SCRIPTS/release-gce-arm64.sh" notes "$T/m-new-fork.json" "$art" "$T/rebuilt1.md")"
+assert_fails "and not the previous one" grep -q "@${head:0:12}" <<<"$("$SCRIPTS/release-gce-arm64.sh" notes "$T/m-new-fork.json" "$art" "$T/rebuilt1.md")"
+
 echo "-- cleanup-gce-arm64.sh"
 ws=$T/ws; mkdir -p "$ws/gce-arm64-123-1/__build__/images" "$ws/other"
 echo x >"$ws/gce-arm64-123-1/__build__/images/f.raw"
