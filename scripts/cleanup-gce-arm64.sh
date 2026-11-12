@@ -9,9 +9,9 @@
 # Removes, and nothing else:
 #   - the SDK container CONTAINER and its anonymous volumes (the board root,
 #     /build/arm64-usr, lives in the container);
-#   - loop devices still attached to disk images under FORK_DIR/__build__ (a
-#     cancelled build_image can leave them; the container shares the host's
-#     /dev);
+#   - loop devices still attached to disk images (*.bin, *.raw, *.img,
+#     *.squashfs) under FORK_DIR/__build__ (a cancelled build_image can leave
+#     them; the container shares the host's /dev);
 #   - FORK_DIR, which holds __build__ and sdk_container/.cache. It must be a
 #     directory named gce-arm64-<number>-<number> directly under WORK_ROOT.
 # The SDK image stays in Docker's cache for the next run. Every step is
@@ -54,7 +54,7 @@ if [[ -n $fork_real ]]; then
         [[ -n $dev ]] || continue
         if losetup --detach "$dev"; then log "detached $dev ($f)"; else log "warning: could not detach $dev"; fi
       done < <(losetup --noheadings --output NAME --associated "$f" 2>/dev/null || true)
-    done < <(find "$fork_real/__build__" -type f \( -name '*.bin' -o -name '*.raw' \) -print0 2>/dev/null)
+    done < <(find "$fork_real/__build__" -type f \( -name '*.bin' -o -name '*.raw' -o -name '*.img' -o -name '*.squashfs' \) -print0 2>/dev/null)
   fi
   if rm -rf --one-file-system "$fork_real"; then log "removed $fork_real"; else log "warning: could not remove $fork_real"; fi
 fi
