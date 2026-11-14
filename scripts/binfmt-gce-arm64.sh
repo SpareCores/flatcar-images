@@ -3,8 +3,11 @@
 # arm64 board of the SDK needs (build_image runs the sysroot's own binaries,
 # e.g. localedef, in bwrap: without a handler "Exec format error").
 #
-#   binfmt-gce-arm64.sh register IMAGE STATEFILE   (as root, before the SDK steps)
+#   binfmt-gce-arm64.sh register IMAGE STATEFILE   (before the SDK steps)
 #   binfmt-gce-arm64.sh unregister STATEFILE       (always-run cleanup)
+#
+# Writing binfmt_misc needs root: as a user the writes go through passwordless
+# sudo (lib.sh: write_root).
 #
 # binfmt_misc is host-global: while the build job runs, every process of the
 # shared runner can execute aarch64 binaries through this handler. The
@@ -37,7 +40,7 @@ existing() {
 register() {
   local image=$1 state=$2 name tmp cid
   [[ $image =~ ^[a-z0-9./:_@-]+$ ]] || die "invalid image: $image"
-  [[ -d $dir && -w $dir/register ]] || die "no writable $dir/register (binfmt_misc not mounted, or not root)"
+  [[ -d $dir && -e $dir/register ]] || die "no $dir/register (binfmt_misc not mounted)"
   if name=$(existing); then
     log "an aarch64 binfmt handler exists ($name): left untouched"
     rm -f "$state"
@@ -54,7 +57,7 @@ register() {
   # the state file first: a cancel between the write and the registration is
   # cleaned up as "not registered" (unregister checks the entry exists)
   printf '%s\n' "$name" >"$state"
-  printf ':%s:M::%s:%s:%s:F\n' "$name" "$magic" "$mask" "$tmp/qemu-aarch64" >"$dir/register"
+  printf ':%s:M::%s:%s:%s:F\n' "$name" "$magic" "$mask" "$tmp/qemu-aarch64" | write_root "$dir/register"
   for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -f $dir/$name ]] && break; sleep 0.2; done
   [[ -f $dir/$name ]] || die "the handler $name was not registered"
   log "registered binfmt handler $name (host-global until the job's cleanup)"
@@ -66,7 +69,7 @@ unregister() {
   name=$(<"$state")
   [[ $name =~ ^flatcar-images-qemu-aarch64-[0-9]+-[0-9]+$ || $name =~ ^flatcar-images-qemu-aarch64-[0-9]+$ ]] || die "invalid state file $state"
   if [[ -f $dir/$name ]]; then
-    echo -1 >"$dir/$name"
+    echo -1 | write_root "$dir/$name"
     log "unregistered binfmt handler $name"
   fi
   rm -f "$state"

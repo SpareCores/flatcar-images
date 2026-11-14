@@ -8,7 +8,8 @@ run-name: build gce arm64 ${{ inputs.channel }} ${{ inputs.version }} ${{ inputs
 # (every GCE arm64 machine type is gVNIC-only); the fork adds it.
 #
 # By hand only (workflow_dispatch), never on pull requests or pushes: the build
-# runs fork code as root on the organisation's shared self-hosted runner, and
+# runs fork code on the organisation's shared self-hosted runners (as a user with
+# passwordless sudo and the docker group, so root in effect), and
 # the signature must come from main (verify.sh pins this workflow on main).
 # The fork must be a SpareCores repository. The release is the one build.yml
 # made: the artifact of the same name is replaced, manifest.json and SHA256SUMS

@@ -303,4 +303,28 @@ mkdir -p "$ws/gce-arm64-7-1/inner/gce-arm64-8-1"; ln -s "$T/elsewhere" "$ws/gce-
 assert_fails_with "refuses a symlink to somewhere else" "not directly under" env CONTAINER=flatcar-gce-arm64-1 "$SCRIPTS/cleanup-gce-arm64.sh" "$ws/gce-arm64-6-1"
 assert_fails_with "refuses a container name that is not ours" "invalid CONTAINER" env CONTAINER=other "$SCRIPTS/cleanup-gce-arm64.sh" "$ws/gce-arm64-9-1"
 assert_fails_with "refuses an empty container name" "invalid CONTAINER" env -u CONTAINER "$SCRIPTS/cleanup-gce-arm64.sh" "$ws/gce-arm64-9-1"
+
+echo "-- cleanup-gce-arm64.sh as a user: root-owned files are removed through sudo"
+if [[ $(id -u) -eq 0 ]]; then
+  echo "  (skipped: running as root)"
+else
+  # a directory the user cannot empty stands in for the container's root-owned
+  # files; the stub sudo records the call, makes the target writable and runs it
+  mkdir -p "$T/sbin" "$ws/gce-arm64-11-1/locked"; : >"$ws/gce-arm64-11-1/locked/f"; chmod 555 "$ws/gce-arm64-11-1/locked"
+  cat >"$T/sbin/sudo" <<'SEOF'
+#!/usr/bin/env bash
+echo "$*" >>"$STUB_SUDO_LOG"
+[[ $1 == -n ]] && shift
+chmod -R u+w "${@: -1}"
+exec "$@"
+SEOF
+  chmod +x "$T/sbin/sudo"; export STUB_SUDO_LOG=$T/sudo.log; : >"$STUB_SUDO_LOG"
+  assert_ok "cleanup" env PATH="$T/sbin:$PATH" CONTAINER=flatcar-gce-arm64-11-1 "$SCRIPTS/cleanup-gce-arm64.sh" "$ws/gce-arm64-11-1"
+  assert_fails "the run directory is gone" test -e "$ws/gce-arm64-11-1"
+  assert_eq "removed through sudo -n rm" "-n $(command -v rm) -rf --one-file-system $(cd "$ws" && pwd -P)/gce-arm64-11-1" "$(cat "$STUB_SUDO_LOG")"
+  : >"$STUB_SUDO_LOG"
+  mkdir -p "$ws/gce-arm64-12-1"
+  assert_ok "a directory the user can remove" env PATH="$T/sbin:$PATH" CONTAINER=flatcar-gce-arm64-12-1 "$SCRIPTS/cleanup-gce-arm64.sh" "$ws/gce-arm64-12-1"
+  assert_eq "needs no sudo" "" "$(cat "$STUB_SUDO_LOG")"
+fi
 finish

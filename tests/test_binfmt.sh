@@ -59,4 +59,23 @@ assert_ok "state file removed" test ! -e "$state"
 echo "../../etc/passwd" >"$state"
 assert_fails "a forged state file is refused" "$S" unregister "$state"
 
+echo "-- as a user, a file it cannot write is written through sudo"
+if [[ $(id -u) -eq 0 ]]; then
+  echo "  (skipped: running as root)"
+else
+  # the stub sudo records its arguments and what it got on standard input
+  cat >"$T/bin/sudo" <<'SEOF'
+#!/usr/bin/env bash
+echo "$*" >>"$SUDO_LOG"
+cat >>"$SUDO_LOG"
+SEOF
+  chmod +x "$T/bin/sudo"; export SUDO_LOG=$T/sudo.log
+  ro=$T/readonly; : >"$ro"; chmod 444 "$ro"
+  # shellcheck disable=SC2016 # expanded by the inner shell
+  assert_ok "write_root" bash -c 'source "$1"; echo -1 | write_root "$2"' _ "$SCRIPTS/lib.sh" "$ro"
+  assert_eq "through sudo -n tee, the command resolved on PATH" "-n $(command -v tee) $ro
+-1" "$(cat "$SUDO_LOG")"
+  assert_eq "the file itself was not touched" "" "$(cat "$ro")"
+fi
+
 finish
