@@ -49,7 +49,7 @@ assert_fails_with "build refuses upcloud on lts" "Ignition" "$SCRIPTS/build.sh" 
 assert_fails_with "build refuses vultr arm64" "not built for arm64" "$SCRIPTS/build.sh" stable 4757.2.3 arm64 vultr "$T/o"
 assert_eq "no published format is over the asset limit by config" "0" "$(jq '[.platforms[].formats[] | select(.kind=="raw" and .publish)] | length' "$P")"
 
-# build-gce-arm64.yml runs fork code as root on the organisation's shared runner.
+# build-gce-arm64.yml runs fork code on the organisation's shared runners (root in effect: sudo, docker).
 W=$ROOT/.github/workflows
 G=$W/build-gce-arm64.yml
 assert_ok "gce arm64 workflow exists" test -f "$G"

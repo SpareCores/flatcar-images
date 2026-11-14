@@ -12,6 +12,29 @@ MAX_ASSET_BYTES=2147483647
 log() { printf '%s\n' "$*" >&2; }
 die() { log "error: $*"; exit 1; }
 
+# as_root CMD ARGS...: CMD as root: directly when the caller is root, else
+# through passwordless sudo (the self-hosted runners run jobs as users that
+# have it). CMD is resolved on the caller's PATH first, as sudo replaces PATH.
+as_root() {
+  if [[ $(id -u) -eq 0 ]]; then
+    "$@"
+    return
+  fi
+  local cmd
+  cmd=$(command -v "$1") || die "missing tool: $1"
+  sudo -n "$cmd" "${@:2}"
+}
+
+# write_root FILE: standard input into FILE, as root when the caller cannot
+# write FILE itself.
+write_root() {
+  if [[ -w $1 ]]; then
+    cat >"$1"
+  else
+    as_root tee "$1" >/dev/null
+  fi
+}
+
 need() {
   local t
   for t in "$@"; do

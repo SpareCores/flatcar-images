@@ -118,13 +118,14 @@ mkdir -p "$outdir" "$evidence"
 sdk_home=$fork/.sdk-home
 mkdir -p "$sdk_home/.docker"
 # The SDK refuses to run as root (it creates the build user from SDK_USER_ID,
-# which run_sdk_container takes from `id -u`). The shared runner runs jobs as
-# root and no account may be added to it, so as root the SDK steps run as a
-# numeric uid:gid without a passwd entry (SDK_UID, default 4757:4757) that is
-# in no group but docker (the Docker socket is all it needs; the container is
-# privileged anyway, as in flatcar/scripts' own CI). The fork directory is
-# owned by it, the docker client configuration is an empty one in .sdk-home
-# (no credentials of root; the SDK image is public).
+# which run_sdk_container takes from `id -u`). The shared runners run jobs as
+# users in the docker group, and the SDK steps run as that user. When run as
+# root (by hand), the SDK steps run as a numeric uid:gid without a passwd
+# entry (SDK_UID, default 4757:4757) that is in no group but docker (the
+# Docker socket is all it needs; the container is privileged anyway, as in
+# flatcar/scripts' own CI). The fork directory is owned by it, the docker
+# client configuration is an empty one in .sdk-home (no credentials of root;
+# the SDK image is public).
 sdk_uid=${SDK_UID:-4757}
 sdk_prefix=()
 if [[ $(id -u) -eq 0 ]]; then

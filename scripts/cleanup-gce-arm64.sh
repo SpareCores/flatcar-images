@@ -15,7 +15,9 @@
 #   - FORK_DIR, which holds __build__ and sdk_container/.cache. It must be a
 #     directory named gce-arm64-<number>-<number> directly under WORK_ROOT.
 # The SDK image stays in Docker's cache for the next run. Every step is
-# best effort and reported; the script fails only on a refused path.
+# best effort and reported; the script fails only on a refused path. Detaching
+# loop devices and removing root-owned files need root: as a user they go
+# through passwordless sudo (lib.sh: as_root).
 set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -52,9 +54,15 @@ if [[ -n $fork_real ]]; then
     while IFS= read -r -d '' f; do
       while read -r dev; do
         [[ -n $dev ]] || continue
-        if losetup --detach "$dev"; then log "detached $dev ($f)"; else log "warning: could not detach $dev"; fi
+        if as_root losetup --detach "$dev"; then log "detached $dev ($f)"; else log "warning: could not detach $dev"; fi
       done < <(losetup --noheadings --output NAME --associated "$f" 2>/dev/null || true)
     done < <(find "$fork_real/__build__" -type f \( -name '*.bin' -o -name '*.raw' -o -name '*.img' -o -name '*.squashfs' \) -print0 2>/dev/null)
   fi
-  if rm -rf --one-file-system "$fork_real"; then log "removed $fork_real"; else log "warning: could not remove $fork_real"; fi
+  # The privileged SDK container leaves root-owned files: as a user, what rm
+  # cannot remove is removed as root.
+  if rm -rf --one-file-system "$fork_real" 2>/dev/null || as_root rm -rf --one-file-system "$fork_real"; then
+    log "removed $fork_real"
+  else
+    log "warning: could not remove $fork_real"
+  fi
 fi
