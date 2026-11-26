@@ -100,3 +100,19 @@ outside_sum() {
   read -r s e < <(oem_range "$1")
   { head -c "$s" "$1"; tail -c +$((e + 1)) "$1"; } | sha256sum | cut -d' ' -f1
 }
+
+# make_stock_init FILE: a stand-in for Flatcar's minimal-init: the lines around the two hunks of the
+# patch, with filler in between (the patch is checked against the real file by
+# the build, which fails when it does not apply).
+make_stock_init() {
+  {
+    echo '#!/bin/sh'
+    seq 55 | sed 's/^/# filler /'
+    printf '%s\n' '# Required to access disks, but not autoloaded:' '/sbin/modprobe sd_mod' '' \
+      'debug_sh 2/4: before verity' '' 'find_drive() {'
+    seq 130 | sed 's/^/# filler /'
+    printf '%s\n' ':' '}' 'if true; then' '  cp -a /oem/. /realinit/oem || cp -a /usr/share/oem/. /realinit/oem || true' \
+      '  mv /usr.squashfs /realinit' 'fi' 'debug_sh 4/4: before switch_root to /realinit' \
+      'killall mdev || true' 'umount /proc'
+  } >"$1"
+}

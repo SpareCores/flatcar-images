@@ -34,6 +34,30 @@
         { "ext": "img.gz", "kind": "raw-gzip", "publish": true }
       ]
     },
+    "oraclecloud-iscsi": {
+      "oem_id": "oraclecloud",
+      "arches": ["amd64"],
+      "skip_channels": ["lts"],
+      "skip_reason": "the LTS release has no minimal-init in its initramfs (Flatcar added it in 2025-09), so the iSCSI login patch has nothing to apply to",
+      "source_image": "flatcar_production_oraclecloud_image.img",
+      "ibft_overlay": true,
+      "grub_extra": [
+        "set ibft_oem=\"$oem\"",
+        "set default=\"flatcar-ibft\"",
+        "menuentry \"Flatcar default\" --id=flatcar-ibft --unrestricted {",
+        "    gptprio",
+        "    if [ \"$usr_uuid\" = \"@USR_A_PARTUUID@\" ]; then",
+        "        linux$suf $gptprio_kernel $gptprio_cmdline $linux_cmdline rdinit=/ibft-init",
+        "        initrd ($ibft_oem)/flatcar-ibft.cpio",
+        "    else",
+        "        linux$suf $gptprio_kernel $gptprio_cmdline $linux_cmdline",
+        "    fi",
+        "}"
+      ],
+      "formats": [
+        { "ext": "qcow2", "kind": "qcow2", "publish": true }
+      ]
+    },
     "gce": {
       "oem_id": "gce",
       "arches": ["arm64"],

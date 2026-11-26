@@ -1,0 +1,39 @@
+#!/bin/bash
+# Prepare the real root for an iSCSI root disk. Runs in the initrd, before
+# switch-root, from ibft-root-setup.service (see docs/oraclecloud-iscsi.md).
+#
+# The initrd's /etc holds what the early init left for this stage:
+# iscsi/iscsid.conf and systemd/network/00-ibft.network. The initiator name is
+# the one in the iBFT (the target only accepts that one). Files the real root
+# already has are kept, so a second boot, or an Ignition config that sets them,
+# is not overwritten; but not Flatcar's own default iscsid.conf, which is there
+# on the first boot (as a file or a link) and has the short replacement_timeout.
+# Only iscsid is enabled: iscsi.service would log the root session out at
+# shutdown.
+#
+# Test overrides: SYSROOT, INITRD_ETC, IBFT_DIR.
+set -euo pipefail
+
+sysroot=${SYSROOT:-/sysroot}
+initrd_etc=${INITRD_ETC:-/etc}
+ibft=${IBFT_DIR:-/sys/firmware/ibft}
+
+initiator=$(<"$ibft/initiator/initiator-name")
+[[ -n $initiator ]] || { echo "ibft-root-setup: no initiator name in $ibft" >&2; exit 1; }
+
+# keep SRC DEST: copy SRC to DEST unless DEST exists.
+keep() { [[ -e $2 ]] || cp "$1" "$2"; }
+# same_content A B: two files with the same text (the initrd has no cmp).
+same_content() { [[ -f $1 && -f $2 && $(<"$1") == "$(<"$2")" ]]; }
+
+mkdir -p "$sysroot/etc/iscsi" "$sysroot/etc/systemd/network" \
+  "$sysroot/etc/systemd/system/multi-user.target.wants" "$sysroot/etc/systemd/system/sockets.target.wants"
+
+[[ -e $sysroot/etc/iscsi/initiatorname.iscsi ]] || echo "InitiatorName=$initiator" >"$sysroot/etc/iscsi/initiatorname.iscsi"
+conf=$sysroot/etc/iscsi/iscsid.conf
+if [[ -L $conf ]] || same_content "$conf" "$sysroot/usr/share/iscsi/iscsid.conf"; then rm -f "$conf"; fi
+keep "$initrd_etc/iscsi/iscsid.conf" "$conf"
+keep "$initrd_etc/systemd/network/00-ibft.network" "$sysroot/etc/systemd/network/00-ibft.network"
+ln -sf /usr/lib/systemd/system/iscsid.service "$sysroot/etc/systemd/system/multi-user.target.wants/iscsid.service"
+ln -sf /usr/lib/systemd/system/iscsid.socket "$sysroot/etc/systemd/system/sockets.target.wants/iscsid.socket"
+echo "ibft-root-setup: iSCSI root prepared (initiator $initiator)"

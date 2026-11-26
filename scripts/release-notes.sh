@@ -17,7 +17,7 @@ if [[ $# -eq 2 ]]; then
 fi
 
 jq -r '
-  "Flatcar \(.channel) \(.version): generic image with the OEM id set per vendor.\n",
+  "Flatcar \(.channel) \(.version): the official image per vendor with the OEM id set. oraclecloud-iscsi is made from the official oraclecloud image and carries one extra initrd for iSCSI boot (docs/oraclecloud-iscsi.md); it is booted in QEMU before release.\n",
   "| Artifact | Vendor | OEM id | Arch | Format | Size | sha256 |",
   "|---|---|---|---|---|---|---|",
   (.artifacts[] | "| `\(.name)` | \(.vendor) | `\(.oem_id)` | \(.arch) | \(.format) | \(.size) | `\(.sha256)` |"),

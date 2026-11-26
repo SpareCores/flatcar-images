@@ -1,0 +1,14 @@
+[Unit]
+Description=Prepare the iSCSI root disk for the real system (iscsid, initiator name, network)
+DefaultDependencies=no
+# After Ignition, so that anything it wrote for iSCSI or the network is kept.
+After=ignition-files.service initrd-setup-root-after-ignition.service
+Before=initrd-parse-etc.service initrd-switch-root.target
+RequiresMountsFor=/sysroot/usr/
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ibft-root-setup
+
+[Install]
+WantedBy=initrd.target

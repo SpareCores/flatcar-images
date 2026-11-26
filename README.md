@@ -2,7 +2,7 @@
 
 [Flatcar Container Linux](https://www.flatcar.org/) images for the cloud vendors that have no official Flatcar image, built from Flatcar's own release files and published as signed GitHub releases.
 
-A generic Flatcar image has no OEM id: on a vendor without an official image it runs Ignition as `qemu` (fw_cfg) and boots unconfigured. The only thing that differs between an official OEM image and a generic one is one file on the OEM partition, `grub.cfg` with `set oem_id="<id>"`. This repository downloads the official generic image, verifies it, writes that one file, and repackages the disk in the format each vendor imports. Nothing else in the image changes (the build checks that everything outside the OEM partition is byte-identical to Flatcar's image). The one exception is Google Cloud arm64: Flatcar's arm64 kernel has no gVNIC driver, which every GCE arm64 machine type needs, so that image is built from source with a kernel fork ([docs/gce-arm64.md](docs/gce-arm64.md)).
+A generic Flatcar image has no OEM id: on a vendor without an official image it runs Ignition as `qemu` (fw_cfg) and boots unconfigured. The only thing that differs between an official OEM image and a generic one is one file on the OEM partition, `grub.cfg` with `set oem_id="<id>"`. This repository downloads the official generic image, verifies it, writes that one file, and repackages the disk in the format each vendor imports. Nothing else in the image changes (the build checks that everything outside the OEM partition is byte-identical to Flatcar's image). Two images are not plain OEM-id repacks. Oracle Cloud bare metal boots from an iSCSI volume that Flatcar's early boot does not log in to; the image there gets one extra initrd and a GRUB entry on the OEM partition, still nothing else changed ([docs/oraclecloud-iscsi.md](docs/oraclecloud-iscsi.md)). Google Cloud arm64: Flatcar's arm64 kernel has no gVNIC driver, which every GCE arm64 machine type needs, so that image is built from source with a kernel fork ([docs/gce-arm64.md](docs/gce-arm64.md)).
 
 It is part of how [SpareCores/scarpenter](https://github.com/SpareCores/scarpenter) finds a boot image per vendor, and anyone else can use the releases the same way. It holds no cloud credentials (the GCP publishing uses keyless federation) and never boots an image on a vendor.
 
@@ -24,6 +24,7 @@ When Flatcar ships an official image for a platform, this repository stops build
 | UpCloud | `upcloud` | amd64 | `flatcar-upcloud-<channel>-<version>-amd64.img.gz` (raw, gzip) | stable, beta, alpha. **Not LTS**: the LTS release ships an Ignition without the `upcloud` platform (needs 2.23 or later). |
 | Vultr | `vultr` | amd64 | `flatcar-vultr-<channel>-<version>-amd64.img.gz` (raw, gzip) | all |
 | Alibaba Cloud | `aliyun` | amd64, arm64 | `flatcar-aliyun-<channel>-<version>-<arch>.qcow2` (compressed) and `.img.gz` (raw, gzip) | all |
+| Oracle Cloud bare metal | `oraclecloud` | amd64 | `flatcar-oraclecloud-iscsi-<channel>-<version>-amd64.qcow2`: the official oraclecloud image plus an initrd overlay that logs in to the iSCSI boot volume of bare metal shapes ([docs/oraclecloud-iscsi.md](docs/oraclecloud-iscsi.md)); VM shapes boot it as before | stable, beta, alpha. **Not LTS**: the LTS initramfs has no `minimal-init` to patch. |
 | Google Cloud | `gce` | arm64 | `flatcar-gce-<channel>-<version>[-<revision>]-arm64.tar.gz` (one sparse `disk.raw`, whole GiB, `oldgnu` tar), built from a kernel fork by the `build-gce-arm64` workflow, by hand | all |
 
 Stable and LTS are built automatically when Flatcar releases them (a daily check, see below), except the GCE arm64 image, which is built by hand with `build-gce-arm64.yml` and added to the release of its version. Beta and alpha are built on request: run the `build` workflow by hand, or set `"track": true` in `config/channels.json`.
@@ -93,6 +94,7 @@ None of this is automated here; it is what your infrastructure as code does once
 | UpCloud amd64 | implemented, tested on synthetic images | not yet verified live |
 | Vultr amd64 | implemented, tested on synthetic images | not yet verified live; import format open |
 | Alibaba amd64, arm64 | implemented, tested on synthetic images | not yet verified live; import format open |
+| Oracle Cloud bare metal amd64 | implemented; booted in QEMU on both paths (`scripts/boot-test-iscsi.sh`, in CI) | booted in QEMU via iSCSI/iBFT; OCI bare metal live boot pending |
 | GCE arm64 | built from the kernel fork by `build-gce-arm64.yml` (`tar.gz` with `disk.raw`), published by `publish-gcp.yml`; tested against a stub SDK and a stubbed `gcloud` | the workflow has not been run yet; the image is unbooted (the generic image was booted and cannot work: no gVNIC) |
 
 "Boot not yet verified live" means the OEM id patch is tested (the file is written, the rest of the disk is unchanged, a real Flatcar signature verifies) and a patched stable 4757.2.3 amd64 image booted locally in QEMU (BIOS) with `flatcar.oem.id=upcloud` on the kernel command line, but nobody has run Ignition on the vendor's metadata service with these images. Each vendor's boot check belongs to SCarpenter's vendor test lanes.
@@ -118,7 +120,9 @@ The fork image has the `oem-gce` sysext for arm64 (the legacy Python guest scrip
 scripts/fetch.sh         download image + DIGESTS.asc, verify signature and SHA512
 scripts/patch-oem.sh     write /grub.cfg into the OEM partition (btrfs, ext4 or FAT)
 scripts/package.sh       raw gzip, qcow2, GCE tar; meta.json per artifact
-scripts/build.sh         the three above for one (channel, version, arch, vendor)
+scripts/oci-ibft.sh      build the iSCSI boot initrd of the oraclecloud image (patches/, overlay/)
+scripts/boot-test-iscsi.sh  boot that image in QEMU from an iSCSI target and from a plain disk
+scripts/build.sh         the above for one (channel, version, arch, vendor)
 scripts/manifest.sh      manifest.json and SHA256SUMS
 scripts/matrix.sh        build matrix of a channel; UpCloud skips LTS
 scripts/track.sh         tracked releases without a GitHub release
@@ -128,22 +132,23 @@ scripts/build-gce-arm64.sh    build the GCE arm64 image from the kernel fork (SD
 scripts/verify-gce-arm64.sh   check driver, initrd, OEM sysext and console in that image
 scripts/release-gce-arm64.sh  merge its artifact into the manifest and checksums of a release
 scripts/cleanup-gce-arm64.sh  remove the container, loop devices and run directory
-config/platforms.json    per vendor: OEM id, architectures, formats, skipped channels, built_by (gce)
+config/platforms.json    per vendor: OEM id, architectures, formats, skipped channels, built_by (gce), source_image and ibft_overlay (oraclecloud-iscsi)
 config/channels.json     channels built automatically
 ```
 
 Patching needs no root. The OEM partition (GPT name `OEM`, partition 6) is cut out of the disk with `dd` using offsets from `sfdisk --json` and copied back with `dd conv=notrunc`. In current Flatcar it is btrfs, for which no user-space writer exists: its files are extracted with `btrfs restore` and the filesystem is recreated with `mkfs.btrfs --rootdir` at the same size, with the same label, UUID, node size, mixed block groups and block group tree, under `fakeroot` so every file is owned by root. ext4 (`debugfs`) and FAT (mtools) are handled too. Loop mounts and guestfish would need root or a FUSE/libguestfs appliance; this runs identically on GitHub-hosted runners and a laptop. The script digests everything outside the partition before and after, checks the filesystem (`btrfs check`, `e2fsck`), checks that `grub.cfg` is root-owned with mode 0644, and reads it back.
 
-GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads each tracked channel's `version.txt` from the Flatcar release server, dispatches `build.yml` for versions without a release), `build.yml` (build matrix, then a `sign` job with `id-token: write`, then a `release` job, the only one with `contents: write`; a failed build opens one issue per version, and later failures of the same version, such as the next day's retry by `track-releases.yml`, comment on it). `build-gce-arm64.yml` (by hand only; builds the GCE arm64 image from the kernel fork on the organisation's self-hosted runner, signs it and adds it to the release; see [docs/gce-arm64.md](docs/gce-arm64.md)). `publish-gcp.yml` (after `build` succeeds, or by hand; the only workflow that talks to a cloud, with `id-token: write` and `contents: read`, configured by repository variables and skipped while they are unset). Actions are pinned by commit SHA, no secrets are used.
+GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads each tracked channel's `version.txt` from the Flatcar release server, dispatches `build.yml` for versions without a release), `build.yml` (build matrix, then a `sign` job with `id-token: write`, then a `release` job, the only one with `contents: write`; a failed build opens one issue per version, and later failures of the same version, such as the next day's retry by `track-releases.yml`, comment on it). `boot-test-iscsi.yml` (pull requests that touch the oraclecloud-iscsi recipe, and by hand: builds and boots the image in QEMU/KVM; `build.yml` runs the same boot test before it releases that image). `build-gce-arm64.yml` (by hand only; builds the GCE arm64 image from the kernel fork on the organisation's self-hosted runner, signs it and adds it to the release; see [docs/gce-arm64.md](docs/gce-arm64.md)). `publish-gcp.yml` (after `build` succeeds, or by hand; the only workflow that talks to a cloud, with `id-token: write` and `contents: read`, configured by repository variables and skipped while they are unset). Actions are pinned by commit SHA, no secrets are used.
 
 ## Develop
 
-Needs `bash`, `jq`, `curl`, `git`, `gpg`, `bzip2`, `gzip`, GNU `tar`, `sfdisk` and `sgdisk` (`gdisk`), `btrfs-progs` (6.1 or later, for the block group tree), `fakeroot`, `e2fsprogs`, `qemu-img`, and `mtools` and `dosfstools` for the FAT tests. `shellcheck` and `actionlint` for `make lint`.
+Needs `bash`, `jq`, `curl`, `git`, `gpg`, `bzip2`, `gzip`, GNU `tar`, `sfdisk` and `sgdisk` (`gdisk`), `btrfs-progs` (6.1 or later, for the block group tree), `fakeroot`, `e2fsprogs`, `qemu-img`, and `mtools` and `dosfstools` for the FAT tests; `cpio`, `kmod`, `patch` and `binutils` for the oraclecloud-iscsi build. `shellcheck` and `actionlint` for `make lint`. The boot test needs `/dev/kvm`, QEMU, OVMF, docker, a C compiler and `make` (it builds iPXE).
 
 ```sh
 make lint
 make test      # no network, synthetic disks, fake release server with a throwaway key
 make build CHANNEL=stable VERSION=4757.2.3 ARCH=amd64 VENDOR=upcloud   # downloads about 0.6 GB
+scripts/boot-test-iscsi.sh out/stable-4757.2.3/flatcar-oraclecloud-iscsi-stable-4757.2.3-amd64.qcow2   # after make build ... VENDOR=oraclecloud-iscsi
 ```
 
 ## Upstream
