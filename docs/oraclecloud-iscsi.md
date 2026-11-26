@@ -19,17 +19,18 @@ Nothing outside the OEM partition. The build checks that, as for every image of 
   ```
   set ibft_oem="$oem"
   set default="flatcar-ibft"
-  set fallback="flatcar"
   menuentry "Flatcar default" --id=flatcar-ibft --unrestricted {
       gptprio
-      linux$suf $gptprio_kernel $gptprio_cmdline $linux_cmdline
       if [ "$usr_uuid" = "<USR-A partition UUID>" ]; then
+          linux$suf $gptprio_kernel $gptprio_cmdline $linux_cmdline rdinit=/ibft-init
           initrd ($ibft_oem)/flatcar-ibft.cpio
+      else
+          linux$suf $gptprio_kernel $gptprio_cmdline $linux_cmdline
       fi
   }
   ```
 
-  No kernel argument is added and no hash is written down: GRUB adds `verity.usrhash` itself. `$oem` is saved first because Flatcar's `grub.cfg` overwrites it after sourcing the OEM file.
+  The only kernel argument added is `rdinit=/ibft-init`, and no hash is written down: GRUB adds `verity.usrhash` itself. Flatcar's own `fallback` stays. `$oem` is saved first because Flatcar's `grub.cfg` overwrites it after sourcing the OEM file.
 - `flatcar-ibft.cpio` next to it. The kernel unpacks it on top of its embedded initramfs.
 - The `sysext/` files of the OEM partition stay.
 
@@ -37,8 +38,8 @@ Nothing outside the OEM partition. The build checks that, as for every image of 
 
 `scripts/oci-ibft.sh` builds it from the image itself, without root and without mounting: `vmlinuz-a` is read from the ESP with mtools, `/usr` from USR-A with `btrfs restore`.
 
-- `/init`: the embedded initramfs's `minimal-init` with `patches/minimal-init-ibft.patch` applied. The build fails if the patch does not apply: a new release changed `minimal-init` and the patch needs a look.
-- `iscsistart` and the shared libraries it needs that the embedded initramfs lacks (found by walking the ELF `NEEDED` entries; today `libopeniscsiusr` and `libkmod`).
+- `/ibft-init`: the embedded initramfs's `minimal-init` with `patches/minimal-init-ibft.patch` applied, started by `rdinit=/ibft-init`. Its first line runs the embedded `/init` instead unless `uname -r` is the kernel version baked in at build time, so a `flatcar-ibft.cpio` left on the OEM partition by an older release (after two updates the slot A kernel is newer than the initrd) never takes over. The build fails if the patch does not apply: a new release changed `minimal-init` and the patch needs a look.
+- `/usr/lib/ibft/`: `iscsistart` and the shared libraries it needs that the embedded initramfs lacks (found by walking the ELF `NEEDED` entries; today `libopeniscsiusr` and `libkmod`), run with `LD_LIBRARY_PATH` set. No file of the embedded initramfs is replaced, except the `modules.*` indexes (below).
 - The modules `iscsi_ibft`, `bnxt_en` (E2 shapes), `mlx5_core` (newer shapes) and `virtio_net` (QEMU, for the boot test), with the dependencies that the embedded initramfs lacks, resolved from USR-A's `modules.dep`. The list is in the script and is written into the initrd as `/etc/ibft-modules`. `modules.*` are regenerated with `depmod` over the embedded and the added modules; the build fails if a module of the embedded initramfs differs from USR-A's copy.
 - `/etc/iscsi/iscsid.conf`: USR-A's, with `node.session.timeo.replacement_timeout = 6000`: during a connection drop I/O queues for up to 6000 s instead of failing after 120 s.
 - The files of `overlay/`: `ibft-root-setup` and its unit, used in the dracut stage.
@@ -51,8 +52,8 @@ Without an iBFT (a VM, or any machine without iSCSI boot) `iscsi_ibft_login` ret
 
 With an iBFT, the early init (it logs `iBFT: ...` lines to the kernel log, so they show on every console and in `dmesg`):
 
-1. loads `iscsi_tcp` and the NIC drivers, waits up to 30 s for the NIC with the iBFT's MAC address (the name is not predictable), brings it up with `iscsistart -N`, adds a host route to the target through the iBFT gateway when the target is outside the NIC's subnet (it usually is: `169.254.0.2`), and logs in with `iscsistart -b`;
-2. waits for the disk, and goes on with the stock steps (dm-verity on USR-A, mount, switch to the dracut stage);
+1. loads `iscsi_tcp` and the NIC drivers, waits up to 30 s for the NIC with the iBFT's MAC address (the name is not predictable), brings it up with `iscsistart -N`, adds a host route to the target through the iBFT gateway when the target is outside the NIC's subnet (it usually is: `169.254.0.2`);
+2. logs in with `iscsistart -b`, up to three times, waiting up to 10 s each for the disk (a NIC can be slow to bring its link up), and goes on with the stock steps (dm-verity on USR-A, mount, switch to the dracut stage);
 3. right before the switch, prepares the dracut stage in `/realinit`:
    - `/etc/cmdline.d/90-ibft.conf` with `rd.iscsi.firmware=1 rd.neednet=1 netroot=iscsi:`. dracut's `getarg` reads `/etc/cmdline.d` as well as `/proc/cmdline`, so its iscsi module, the `rd.neednet` network wait and the root session handling work as if the arguments were on the kernel command line. VMs never get the file.
    - `network-cleanup.service` masked. Its `ConditionKernelCommandLine=!netroot` reads only `/proc/cmdline`, which has no `netroot`, so unmasked it would flush the NIC's address at switch-root and the root disk with it.
@@ -72,6 +73,8 @@ It keeps files that exist (an Ignition config, a second boot), except Flatcar's 
 
 - The initrd is loaded only when the `USR-A` slot boots. After an update Flatcar boots slot B, and the stock path cannot log in to iSCSI: a VM still boots, a bare metal node does not. Keep updates off on bare metal nodes (mask `update-engine` and `locksmithd`, as SCarpenter does) or replace nodes per Flatcar version.
 - The OEM `grub.cfg` is read only with secure boot off, which is how the shapes boot today.
+- Not built for LTS: its initramfs has no `minimal-init` yet.
+- A stale initrd with the same kernel version but another module set would still replace the `modules.*` indexes; Flatcar changes the version string with every kernel build, so this is not expected.
 - Only the NIC drivers above. Another bare metal family needs its driver in the list in `scripts/oci-ibft.sh`.
 - Only the iBFT's first NIC and first target (`ethernet0`, `target0`), no CHAP, IPv4.
 - amd64 only. arm64 bare metal (`BM.Standard.A1.160`) would need its own drivers and a boot test.

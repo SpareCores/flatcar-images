@@ -35,8 +35,8 @@ assert_eq "every artifact name matches the convention" "" "$bad"
 assert_eq "stable matrix" \
   "aliyun/amd64 aliyun/arm64 oraclecloud-iscsi/amd64 upcloud/amd64 vultr/amd64" \
   "$("$SCRIPTS/matrix.sh" stable | jq -r '[.include[] | "\(.vendor)/\(.arch)"] | sort | join(" ")')"
-assert_eq "lts matrix has no upcloud" \
-  "aliyun/amd64 aliyun/arm64 oraclecloud-iscsi/amd64 vultr/amd64" \
+assert_eq "lts matrix has no upcloud and no oraclecloud-iscsi" \
+  "aliyun/amd64 aliyun/arm64 vultr/amd64" \
   "$("$SCRIPTS/matrix.sh" lts | jq -r '[.include[] | "\(.vendor)/\(.arch)"] | sort | join(" ")')"
 assert_eq "vendor filter" "vultr/amd64" \
   "$("$SCRIPTS/matrix.sh" stable vultr | jq -r '[.include[] | "\(.vendor)/\(.arch)"] | join(" ")')"
@@ -49,6 +49,7 @@ assert_fails "upcloud-only lts matrix is empty and fails" "$SCRIPTS/matrix.sh" l
 assert_fails "bad channel is rejected" "$SCRIPTS/matrix.sh" "stable;x"
 assert_fails_with "build refuses upcloud on lts" "Ignition" "$SCRIPTS/build.sh" lts 4081.3.12 amd64 upcloud "$T/o"
 assert_fails_with "build refuses vultr arm64" "not built for arm64" "$SCRIPTS/build.sh" stable 4757.2.3 arm64 vultr "$T/o"
+assert_fails_with "build refuses oraclecloud-iscsi on lts" "minimal-init" "$SCRIPTS/build.sh" lts 4081.3.12 amd64 oraclecloud-iscsi "$T/o"
 assert_fails_with "build refuses oraclecloud-iscsi arm64" "not built for arm64" "$SCRIPTS/build.sh" stable 4757.2.3 arm64 oraclecloud-iscsi "$T/o"
 
 # oraclecloud-iscsi: the official oraclecloud image plus the iBFT overlay (docs/oraclecloud-iscsi.md).

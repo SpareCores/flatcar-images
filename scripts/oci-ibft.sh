@@ -5,12 +5,17 @@
 #
 # IMAGE is the raw disk of the official oraclecloud image. Writes
 # OUTDIR/flatcar-ibft.cpio: an initrd that the kernel unpacks on top of its
-# embedded one (docs/oraclecloud-iscsi.md). It carries
-# - /init: the embedded initramfs's minimal-init with patches/minimal-init-ibft.patch
-#   applied (the build fails when the patch does not apply: a new release changed
-#   minimal-init and the patch needs a look);
-# - iscsistart, the shared libraries it needs that the embedded initramfs lacks,
-#   and the modules of DRIVERS (listed in /etc/ibft-modules) with their
+# embedded one (docs/oraclecloud-iscsi.md). It replaces no file of the embedded
+# initramfs but the module indexes: the kernel line says rdinit=/ibft-init, and
+# an initrd left on the OEM partition by an older release never takes over (its
+# first line runs the embedded /init unless the kernel version is the one baked in).
+# It carries
+# - /ibft-init: the embedded initramfs's minimal-init with
+#   patches/minimal-init-ibft.patch applied (the build fails when the patch does
+#   not apply: a new release changed minimal-init and the patch needs a look);
+# - /usr/lib/ibft: iscsistart and the shared libraries it needs that the
+#   embedded initramfs lacks, in a directory of their own;
+# - the modules of DRIVERS (listed in /etc/ibft-modules) with their
 #   dependencies, resolved from USR-A;
 # - regenerated modules.* indexes for the embedded modules plus the new ones
 #   (the build fails when a module of the embedded initramfs differs from USR-A's);
@@ -156,7 +161,7 @@ for m in "${embedded[@]}"; do
 done
 
 ov=$tmp/ov
-mkdir -p "$ov/usr/lib/modules/$kver" "$ov/usr/bin" "$ov/usr/lib64" "$ov/etc/iscsi"
+mkdir -p "$ov/usr/lib/modules/$kver" "$ov/usr/lib/ibft/lib64" "$ov/etc/iscsi"
 for m in "${new[@]}"; do
   mkdir -p "$ov/usr/lib/modules/$kver/$(dirname "$m")"
   xz -dc "$usr_dir/$moddir/$m" >"$ov/usr/lib/modules/$kver/${m%.xz}"
@@ -186,7 +191,7 @@ done
 
 bins=$tmp/bins
 usr_restore "$bins" bin/iscsistart
-install -m 0755 "$bins/bin/iscsistart" "$ov/usr/bin/iscsistart"
+install -m 0755 "$bins/bin/iscsistart" "$ov/usr/lib/ibft/iscsistart"
 libs=$tmp/libs
 queue=("$bins/bin/iscsistart")
 declare -A seen_lib=()
@@ -201,12 +206,12 @@ while ((${#queue[@]})); do
   done
 done
 if [[ -d $libs/lib64 ]]; then
-  cp -a "$libs/lib64/." "$ov/usr/lib64/"
-  find "$ov/usr/lib64" -type f -exec chmod 0755 {} +
+  cp -a "$libs/lib64/." "$ov/usr/lib/ibft/lib64/"
+  find "$ov/usr/lib/ibft/lib64" -type f -exec chmod 0755 {} +
 fi
 log "libraries added: ${!seen_lib[*]}"
 
-# --- iscsid.conf, /init, static files ----------------------------------------
+# --- iscsid.conf, /ibft-init, static files ----------------------------------------
 
 usr_restore "$tmp/conf" share/iscsi/iscsid.conf
 sed "s/^node.session.timeo.replacement_timeout = .*/node.session.timeo.replacement_timeout = $REPLACEMENT_TIMEOUT/" \
@@ -215,10 +220,13 @@ grep -qx "node.session.timeo.replacement_timeout = $REPLACEMENT_TIMEOUT" "$ov/et
   die "iscsid.conf in USR-A has no replacement_timeout line to set"
 
 printf '%s\n' "${DRIVERS[@]}" >"$ov/etc/ibft-modules"
-cp "$ird/init" "$ov/init"
-patch --fuzz=0 --no-backup-if-mismatch -r - -s "$ov/init" "$REPO_ROOT/patches/minimal-init-ibft.patch" ||
+cp "$ird/init" "$tmp/init"
+patch --fuzz=0 --no-backup-if-mismatch -r - -s "$tmp/init" "$REPO_ROOT/patches/minimal-init-ibft.patch" ||
   die "patches/minimal-init-ibft.patch does not apply to this release's minimal-init: it changed upstream, adapt the patch"
-chmod 0755 "$ov/init"
+# The guard is the second line: busybox is the only tool there is at that point.
+# shellcheck disable=SC2016
+{ head -n 1 "$tmp/init"; printf '[ "$(busybox uname -r)" = "%s" ] || exec /init\n' "$kver"; tail -n +2 "$tmp/init"; } >"$ov/ibft-init"
+chmod 0755 "$ov/ibft-init"
 
 cp -a "$REPO_ROOT/overlay/." "$ov/"
 

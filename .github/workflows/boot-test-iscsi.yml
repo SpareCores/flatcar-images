@@ -17,6 +17,8 @@ on:
       - scripts/patch-oem.sh
       - scripts/build.sh
       - scripts/fetch.sh
+      - scripts/lib.sh
+      - scripts/package.sh
       - tests/boot/**
       - config/platforms.json
       - .github/workflows/boot-test-iscsi.yml

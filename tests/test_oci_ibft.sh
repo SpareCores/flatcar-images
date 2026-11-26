@@ -86,11 +86,26 @@ mkdir "$T/x"
 (cd "$T/x" && cpio -idm --quiet <"$cpio_file")
 assert_eq "every entry is owned by root, with mtime 1970" "0" "$(grep -vcE '^[-dl][rwx-]{9} +[0-9]+ root +root .*Jan  1  1970' <<<"$list")"
 assert_eq "the entries are sorted" "$(LC_ALL=C sort <<<"$names")" "$names"
+assert_fails "it has no /init: no file of the embedded initramfs is replaced" test -e "$T/x/init"
+assert_eq "/ibft-init is executable" "755" "$(stat -c %a "$T/x/ibft-init")"
+assert_eq "/ibft-init starts with the shebang of minimal-init" "#!/bin/sh" "$(head -n 1 "$T/x/ibft-init")"
 # shellcheck disable=SC2016
-assert_ok "/init is the patched minimal-init, executable" bash -c '[[ -x $1/init ]] && cmp -s "$1/init" "$2"' _ "$T/x" "$T/patched"
-assert_ok "iscsistart is there, executable" test -x "$T/x/usr/bin/iscsistart"
-assert_eq "its missing library is there, with the soname link" "liblzma.so.5.test" "$(readlink "$T/x/usr/lib64/liblzma.so.5")"
-assert_eq "only that library is added, not those the embedded initramfs has" "liblzma.so.5 liblzma.so.5.test" "$(find "$T/x/usr/lib64" -mindepth 1 -printf "%f\n" | sort | paste -sd" ")"
+assert_eq "then the kernel version guard" '[ "$(busybox uname -r)" = "'$KV'" ] || exec /init' "$(sed -n 2p "$T/x/ibft-init")"
+assert_ok "the rest is the patched minimal-init" cmp <(tail -n +3 "$T/x/ibft-init") <(tail -n +2 "$T/patched")
+assert_ok "iscsistart is in its own directory, executable" test -x "$T/x/usr/lib/ibft/iscsistart"
+assert_eq "its missing library is there, with the soname link" "liblzma.so.5.test" "$(readlink "$T/x/usr/lib/ibft/lib64/liblzma.so.5")"
+assert_eq "only that library is added, not those the embedded initramfs has" "liblzma.so.5 liblzma.so.5.test" "$(find "$T/x/usr/lib/ibft/lib64" -mindepth 1 -printf "%f\n" | sort | paste -sd" ")"
+assert_fails "nothing lands in the embedded initramfs's usr/lib64 or usr/bin" test -e "$T/x/usr/lib64" -o -e "$T/x/usr/bin"
+
+echo "-- a stale initrd (kernel version differs) leaves the embedded init to run"
+# The guard line with a busybox that reports another version, and /init as a marker.
+mkdir "$T/fakebin"
+printf '#!/bin/sh\necho 0.0.0-other\n' >"$T/fakebin/busybox"
+chmod 755 "$T/fakebin/busybox"
+sed -n 2p "$T/x/ibft-init" | sed 's#exec /init#exec echo EMBEDDED-INIT#' >"$T/guard.sh"
+assert_eq "a mismatch execs the embedded init" "EMBEDDED-INIT" "$(PATH=$T/fakebin:$PATH sh "$T/guard.sh")"
+printf '#!/bin/sh\necho %s\n' "$KV" >"$T/fakebin/busybox"
+assert_eq "a match runs on (the guard line itself succeeds)" "" "$(PATH=$T/fakebin:$PATH sh "$T/guard.sh")"
 for m in iscsi_ibft bnxt_en mlx5_core virtio_net nlmon; do
   assert_ok "module $m is added, unpacked" test -f "$T/x/usr/lib/modules/$KV/kernel/drivers/net/$m.ko"
 done

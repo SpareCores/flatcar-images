@@ -1,6 +1,6 @@
 --- a/minimal-init
 +++ b/minimal-init
-@@ -56,6 +56,88 @@
+@@ -56,6 +56,96 @@
  # Required to access disks, but not autoloaded:
  /sbin/modprobe sd_mod
  
@@ -19,6 +19,11 @@
 +# most images.
 +ibft_log() {
 +  { echo "iBFT: $*" > /dev/kmsg; } 2>/dev/null || echo "iBFT: $*" >&2
++}
++# iscsistart and its libraries live in a directory of their own: this initrd is
++# unpacked over the one in the kernel and must not replace files of it.
++iscsistart() {
++  LD_LIBRARY_PATH=/usr/lib/ibft/lib64 /usr/lib/ibft/iscsistart "$@"
 +}
 +ibft_get() {
 +  cat "/sys/firmware/ibft/$1" 2>/dev/null || true
@@ -77,10 +82,13 @@
 +  # iscsistart's idbm needs these directories (the initramfs has no /var or /run).
 +  mkdir -p /var/lib/iscsi /run/lock/iscsi
 +  for d in nodes send_targets static isns ifaces fw; do mkdir -p "/var/lib/iscsi/$d"; done
-+  iscsistart -b >&2 || ibft_log "iscsistart -b failed"
-+  for i in $(seq 30); do
-+    if ls /sys/class/block | grep -q '^sd'; then break; fi
-+    sleep 1
++  # A slow NIC (link-up) can make the first login fail: try up to three times.
++  for try in 1 2 3; do
++    iscsistart -b >&2 || ibft_log "iscsistart -b failed (try ${try})"
++    for i in $(seq 10); do
++      if ls /sys/class/block | grep -q '^sd'; then break 2; fi
++      sleep 1
++    done
 +  done
 +  ibft_log "block devices: $(ls /sys/class/block | tr '\n' ' '), recovery timeout $(cat /sys/class/iscsi_session/session*/recovery_tmo 2>/dev/null | tr '\n' ' ')s"
 +}
@@ -89,7 +97,7 @@
  debug_sh 2/4: before verity
  
  find_drive() {
-@@ -196,6 +278,45 @@
+@@ -196,6 +286,45 @@
    cp -a /oem/. /realinit/oem || cp -a /usr/share/oem/. /realinit/oem || true
    mv /usr.squashfs /realinit
  fi

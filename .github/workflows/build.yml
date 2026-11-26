@@ -108,6 +108,7 @@ jobs:
     needs: [plan, build]
     if: ${{ contains(fromJSON(needs.plan.outputs.matrix).include.*.vendor, 'oraclecloud-iscsi') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
@@ -187,6 +188,8 @@ jobs:
 
   release:
     needs: [plan, sign]
+    # sign may have run although boot-test was skipped: do not let that skip the release.
+    if: ${{ !cancelled() && needs.sign.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write # create the release; no other job has it
