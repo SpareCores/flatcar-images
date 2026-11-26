@@ -1,0 +1,137 @@
+--- a/minimal-init
++++ b/minimal-init
+@@ -56,6 +56,88 @@
+ # Required to access disks, but not autoloaded:
+ /sbin/modprobe sd_mod
+ 
++# iSCSI boot volume (Oracle Cloud bare metal, other iBFT boot-from-SAN machines):
++# the firmware logged in to the iSCSI target and described the session in the
++# iBFT table, but nothing in this early init logs in again, so no disk would
++# show up. Without an iBFT (a VM) iscsi_ibft_login returns at once and nothing
++# below changes the boot.
++#
++# The iBFT is read here, at runtime, because the dracut stage that follows takes
++# its settings from /proc/cmdline in some places and /etc/cmdline.d in others;
++# iscsi_ibft_prepare_realinit makes both stages see an iSCSI root.
++ibft_found=
++# Log to the kernel log (and so to every console, dmesg and the journal): the
++# early init's stderr goes to /dev/console only, which is the VGA console on
++# most images.
++ibft_log() {
++  { echo "iBFT: $*" > /dev/kmsg; } 2>/dev/null || echo "iBFT: $*" >&2
++}
++ibft_get() {
++  cat "/sys/firmware/ibft/$1" 2>/dev/null || true
++}
++
++ip_to_int() {
++  local IFS=.
++  set -- $1
++  echo $(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 ))
++}
++
++# off_subnet IP LOCAL_IP PREFIX_LEN: IP is not in the subnet of LOCAL_IP.
++off_subnet() {
++  local mask=$(( (0xFFFFFFFF << (32 - $3)) & 0xFFFFFFFF ))
++  [ $(( $(ip_to_int "$1") & mask )) -ne $(( $(ip_to_int "$2") & mask )) ]
++}
++
++iscsi_ibft_login() {
++  /sbin/modprobe iscsi_ibft 2>/dev/null || true
++  if [ ! -d /sys/firmware/ibft ]; then
++    return 0
++  fi
++  ibft_found=1
++  ibft_mac=$(ibft_get ethernet0/mac | tr 'A-F' 'a-f')
++  ibft_ip=$(ibft_get ethernet0/ip-addr)
++  ibft_prefix=$(ibft_get ethernet0/prefix-len)
++  ibft_gw=$(ibft_get ethernet0/gateway)
++  ibft_target=$(ibft_get target0/ip-addr)
++  ibft_log "found, NIC ${ibft_mac} ${ibft_ip}/${ibft_prefix} via ${ibft_gw}, target ${ibft_target} $(ibft_get target0/target-name)"
++  # /etc/ibft-modules lists the drivers this initrd adds (the NIC drivers).
++  for m in iscsi_tcp $(cat /etc/ibft-modules); do
++    /sbin/modprobe "$m" || ibft_log "modprobe $m failed"
++  done
++  # The NIC driver registers the link some time after modprobe returns.
++  ibft_dev=
++  for i in $(seq 30); do
++    for d in /sys/class/net/*; do
++      if [ "$(cat "$d/address" 2>/dev/null)" = "${ibft_mac}" ]; then ibft_dev="${d##*/}"; fi
++    done
++    if [ -n "${ibft_dev}" ]; then break; fi
++    sleep 1
++  done
++  if [ -z "${ibft_dev}" ]; then
++    ibft_log "no NIC with MAC ${ibft_mac}"
++  fi
++  iscsistart -N >&2 || ibft_log "iscsistart -N failed"
++  # The target is often off-subnet (link-local): route it via the iBFT gateway.
++  ibft_route_gw=
++  if [ -n "${ibft_dev}" ] && [ -n "${ibft_gw}" ] && [ "${ibft_gw}" != 0.0.0.0 ] &&
++      [ -n "${ibft_target}" ] && [ -n "${ibft_ip}" ] && [ -n "${ibft_prefix}" ] &&
++      off_subnet "${ibft_target}" "${ibft_ip}" "${ibft_prefix}"; then
++    ibft_route_gw=${ibft_gw}
++    ibft_log "route to ${ibft_target} via ${ibft_route_gw} dev ${ibft_dev}"
++    ip route replace "${ibft_target}" via "${ibft_route_gw}" dev "${ibft_dev}" >&2 || ibft_log "ip route failed"
++  fi
++  # iscsistart's idbm needs these directories (the initramfs has no /var or /run).
++  mkdir -p /var/lib/iscsi /run/lock/iscsi
++  for d in nodes send_targets static isns ifaces fw; do mkdir -p "/var/lib/iscsi/$d"; done
++  iscsistart -b >&2 || ibft_log "iscsistart -b failed"
++  for i in $(seq 30); do
++    if ls /sys/class/block | grep -q '^sd'; then break; fi
++    sleep 1
++  done
++  ibft_log "block devices: $(ls /sys/class/block | tr '\n' ' '), recovery timeout $(cat /sys/class/iscsi_session/session*/recovery_tmo 2>/dev/null | tr '\n' ' ')s"
++}
++iscsi_ibft_login
++
+ debug_sh 2/4: before verity
+ 
+ find_drive() {
+@@ -196,6 +278,45 @@
+   cp -a /oem/. /realinit/oem || cp -a /usr/share/oem/. /realinit/oem || true
+   mv /usr.squashfs /realinit
+ fi
++# The dracut stage (/realinit) has to keep the iSCSI root alive: see
++# docs/oraclecloud-iscsi.md. Only on a machine with an iBFT.
++iscsi_ibft_prepare_realinit() {
++  if [ -z "${ibft_found}" ]; then
++    return 0
++  fi
++  # dracut's getarg reads /etc/cmdline.d, so its iscsi module takes over the session.
++  mkdir -p /realinit/etc/cmdline.d
++  echo "rd.iscsi.firmware=1 rd.neednet=1 netroot=iscsi:" > /realinit/etc/cmdline.d/90-ibft.conf
++  # network-cleanup.service is conditional on netroot on /proc/cmdline, which has none:
++  # it would flush the address that carries the root disk at switch-root.
++  mkdir -p /realinit/etc/systemd/system/initrd.target.wants
++  ln -sf /dev/null /realinit/etc/systemd/system/network-cleanup.service
++  # networkd of this stage matches yy-netroot.network on /proc/cmdline too: configure the NIC here.
++  mkdir -p /realinit/etc/systemd/network
++  {
++    echo "[Match]"
++    echo "MACAddress=${ibft_mac}"
++    echo "[Network]"
++    echo "DHCP=ipv4"
++    echo "KeepConfiguration=yes"
++    echo "IgnoreCarrierLoss=yes"
++    if [ -n "${ibft_route_gw}" ]; then
++      echo "[Route]"
++      echo "Destination=${ibft_target}/32"
++      echo "Gateway=${ibft_route_gw}"
++    fi
++  } > /realinit/etc/systemd/network/00-ibft.network
++  mkdir -p /realinit/etc/iscsi
++  cp /etc/iscsi/iscsid.conf /realinit/etc/iscsi/iscsid.conf
++  # ibft-root-setup.service prepares the real root (iscsid, network) before switch-root.
++  cp /usr/lib/ibft/ibft-root-setup.service /realinit/etc/systemd/system/
++  cp /usr/lib/ibft/ibft-root-setup /realinit/usr/bin/
++  chmod 755 /realinit/usr/bin/ibft-root-setup
++  ln -sf ../ibft-root-setup.service /realinit/etc/systemd/system/initrd.target.wants/ibft-root-setup.service
++  ibft_log "prepared /realinit"
++}
++iscsi_ibft_prepare_realinit
++
+ debug_sh 4/4: before switch_root to /realinit
+ killall mdev || true
+ umount /proc

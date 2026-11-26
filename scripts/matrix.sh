@@ -13,7 +13,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [[ $# -ge 1 && $# -le 2 ]] || die "usage: matrix.sh CHANNEL [VENDORS]"
 channel=$1 vendors=${2:-}
 valid_channel "$channel"
-[[ $vendors =~ ^[a-z0-9,]*$ ]] || die "invalid vendor list: $vendors"
+[[ $vendors =~ ^[a-z0-9,-]*$ ]] || die "invalid vendor list: $vendors"
 need jq
 
 m=$(jq -c --arg c "$channel" --arg v "$vendors" '

@@ -34,6 +34,28 @@
         { "ext": "img.gz", "kind": "raw-gzip", "publish": true }
       ]
     },
+    "oraclecloud-iscsi": {
+      "oem_id": "oraclecloud",
+      "arches": ["amd64"],
+      "skip_channels": [],
+      "source_image": "flatcar_production_oraclecloud_image.img",
+      "ibft_overlay": true,
+      "grub_extra": [
+        "set ibft_oem=\"$oem\"",
+        "set default=\"flatcar-ibft\"",
+        "set fallback=\"flatcar\"",
+        "menuentry \"Flatcar default\" --id=flatcar-ibft --unrestricted {",
+        "    gptprio",
+        "    linux$suf $gptprio_kernel $gptprio_cmdline $linux_cmdline",
+        "    if [ \"$usr_uuid\" = \"@USR_A_PARTUUID@\" ]; then",
+        "        initrd ($ibft_oem)/flatcar-ibft.cpio",
+        "    fi",
+        "}"
+      ],
+      "formats": [
+        { "ext": "qcow2", "kind": "qcow2", "publish": true }
+      ]
+    },
     "gce": {
       "oem_id": "gce",
       "arches": ["arm64"],

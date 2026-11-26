@@ -46,7 +46,7 @@ valid_channel() { [[ $1 =~ ^(stable|lts|beta|alpha)$ ]] || die "invalid channel:
 valid_version() { [[ $1 =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid version: $1"; }
 valid_arch() { [[ $1 =~ ^(amd64|arm64)$ ]] || die "invalid arch: $1"; }
 valid_platform() {
-  [[ $1 =~ ^[a-z0-9]+$ ]] || die "invalid platform: $1"
+  [[ $1 =~ ^[a-z0-9-]+$ ]] || die "invalid platform: $1"
   jq -e --arg p "$1" '.platforms[$p]' "$PLATFORMS_JSON" >/dev/null || die "unknown platform: $1"
 }
 

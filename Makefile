@@ -1,6 +1,8 @@
 SHELL := /bin/bash
 SCRIPTS := $(wildcard scripts/*.sh)
-TESTS := $(wildcard tests/*.sh)
+TESTS := $(wildcard tests/*.sh tests/boot/*.sh)
+# Shell scripts that run in the image (initrd) rather than in the build.
+IMAGE_SCRIPTS := overlay/usr/lib/ibft/ibft-root-setup
 
 .PHONY: lint test build clean help
 
@@ -9,7 +11,7 @@ help:
 	@echo "build writes to out/<channel>-<version>/; set ALL_FORMATS=1 for the unpublished raw images"
 
 lint:
-	shellcheck -x $(SCRIPTS) $(TESTS)
+	shellcheck -x $(SCRIPTS) $(TESTS) $(IMAGE_SCRIPTS)
 	@if command -v actionlint >/dev/null; then actionlint; else echo "actionlint not installed: skipped (CI runs it)"; fi
 	jq -e . config/*.json >/dev/null
 

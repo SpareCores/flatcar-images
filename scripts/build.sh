@@ -7,6 +7,11 @@
 # check -> package. The decompressed disk is about 8 GiB but mostly holes, so
 # the work directory needs a few GiB of real space.
 #
+# The source image comes from config/platforms.json: the generic bz2 image by
+# default, or "source_image" (the platform's official image, a qcow2 file). A
+# platform with "ibft_overlay" gets the initrd that scripts/oci-ibft.sh builds
+# from the image, written to the OEM partition next to grub.cfg.
+#
 # Env: WORKDIR (default ./work), CACHE_DIR (default ./cache, downloaded images
 # keyed by channel/version/arch), ALL_FORMATS=1 to also build unpublished
 # formats (the raw image).
@@ -20,7 +25,7 @@ valid_channel "$channel"; valid_version "$version"; valid_arch "$arch"; valid_pl
 outdir=${5:-$REPO_ROOT/out/$channel-$version}
 workdir=${WORKDIR:-$REPO_ROOT/work}
 cache=${CACHE_DIR:-$REPO_ROOT/cache}
-need jq bzip2 dd cp
+need jq bzip2 dd cp sfdisk
 
 if [[ -n $(platform_field "$vendor" '.built_by // empty') ]]; then
   die "$vendor is not built here but by $(platform_field "$vendor" .built_by): $(platform_field "$vendor" .built_by_reason)"
@@ -33,17 +38,32 @@ fi
 
 mkdir -p "$outdir" "$workdir" "$cache"
 raw=$workdir/$vendor-$channel-$version-$arch.raw
-trap 'rm -f "$raw"' EXIT
+overlay=$workdir/$vendor-$channel-$version-$arch.overlay
+trap 'rm -rf "$raw" "$overlay"' EXIT
 
-bz2=$("$(dirname "${BASH_SOURCE[0]}")/fetch.sh" "$channel" "$version" "$arch" "$cache")
-source_json=$cache/$channel-$version-$arch.source.json
+source_image=$(platform_field "$vendor" '.source_image // "flatcar_production_image.bin.bz2"')
+src=$("$(dirname "${BASH_SOURCE[0]}")/fetch.sh" "$channel" "$version" "$arch" "$cache" "$source_image")
+source_json=$src.source.json
 
-log "decompressing $bz2"
-bzip2 -dc "$bz2" | dd of="$raw" bs=4M conv=sparse status=none
+log "decompressing $src"
+case $source_image in
+  *.bin.bz2) bzip2 -dc "$src" | dd of="$raw" bs=4M conv=sparse status=none ;;
+  *.img) need qemu-img; qemu-img convert -f qcow2 -O raw "$src" "$raw" ;;
+  *) die "unknown source image type: $source_image" ;;
+esac
 
+oem_files=()
+if [[ $(platform_field "$vendor" '.ibft_overlay // false') == true ]]; then
+  "$(dirname "${BASH_SOURCE[0]}")/oci-ibft.sh" "$raw" "$overlay"
+  oem_files=(--file "$overlay/flatcar-ibft.cpio")
+fi
+
+# @USR_A_PARTUUID@ in grub_extra: the image's USR-A partition UUID, as GRUB prints it (lower case).
+usr_a_uuid=$(sfdisk --json "$raw" | jq -r '.partitiontable.partitions[] | select(.name == "USR-A") | .uuid | ascii_downcase')
+[[ $usr_a_uuid =~ ^[0-9a-f-]{36}$ ]] || die "no USR-A partition UUID in $raw"
 oem_id=$(platform_field "$vendor" .oem_id)
-mapfile -t extra < <(platform_field "$vendor" '.grub_extra[]')
-"$(dirname "${BASH_SOURCE[0]}")/patch-oem.sh" "$raw" "$oem_id" "${extra[@]}"
+mapfile -t extra < <(platform_field "$vendor" '.grub_extra[]' | sed "s/@USR_A_PARTUUID@/$usr_a_uuid/g")
+"$(dirname "${BASH_SOURCE[0]}")/patch-oem.sh" "${oem_files[@]}" "$raw" "$oem_id" "${extra[@]}"
 
 flags=()
 [[ ${ALL_FORMATS:-0} == 1 ]] && flags=(--all-formats)
