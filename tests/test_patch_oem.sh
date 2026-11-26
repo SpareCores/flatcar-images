@@ -52,7 +52,34 @@ for fs in btrfs ext4 vfat; do
   assert_eq "$fs: outside still unchanged" "$out_before" "$(outside_sum "$d")"
   assert_ok "$fs: extra grub lines" "$SCRIPTS/patch-oem.sh" "$d" gce 'set linux_console="console=ttyAMA0"'
   assert_ok "$fs: extra lines check" "$SCRIPTS/patch-oem.sh" --check "$d" gce 'set linux_console="console=ttyAMA0"'
+
+  # --file: an extra file next to grub.cfg, the other files stay.
+  mkdir -p "$T/f1" "$T/f2"
+  head -c 3000000 /dev/urandom >"$T/f1/initrd.cpio"
+  { cat "$T/f1/initrd.cpio"; echo different; } >"$T/f2/initrd.cpio"
+  assert_ok "$fs: --file" "$SCRIPTS/patch-oem.sh" --file "$T/f1/initrd.cpio" "$d" oraclecloud 'set x="y"'
+  assert_ok "$fs: --file check" "$SCRIPTS/patch-oem.sh" --check --file "$T/f1/initrd.cpio" "$d" oraclecloud 'set x="y"'
+  assert_fails "$fs: --file check fails for other content" "$SCRIPTS/patch-oem.sh" --check --file "$T/f2/initrd.cpio" "$d" oraclecloud 'set x="y"'
+  cp "$T/f1/initrd.cpio" "$T/f1/absent.cpio"
+  assert_fails "$fs: --file check fails for a file that is not on the partition" "$SCRIPTS/patch-oem.sh" --check --file "$T/f1/absent.cpio" "$d" oraclecloud 'set x="y"'
+  read -r s e < <(oem_range "$d")
+  dd if="$d" of="$part" iflag=skip_bytes,count_bytes skip="$s" count=$((e - s)) bs=1M status=none
+  case $fs in
+    btrfs)
+      rm -rf "$T/r" && mkdir "$T/r" && btrfs restore "$part" "$T/r" >/dev/null 2>&1
+      assert_eq "$fs: --file keeps the other file" "keep me" "$(cat "$T/r/other.txt")"
+      assert_ok "$fs: --file is on the partition" cmp "$T/f1/initrd.cpio" "$T/r/initrd.cpio" ;;
+    ext4)
+      assert_eq "$fs: --file keeps the other file" "keep me" "$(debugfs -R 'cat /other.txt' "$part" 2>/dev/null)"
+      assert_ok "$fs: --file is on the partition" cmp "$T/f1/initrd.cpio" <(debugfs -R 'cat /initrd.cpio' "$part" 2>/dev/null) ;;
+    vfat)
+      assert_eq "$fs: --file keeps the other file" "keep me" "$(MTOOLS_SKIP_CHECK=1 mtype -i "$part" ::other.txt)"
+      assert_ok "$fs: --file is on the partition" cmp "$T/f1/initrd.cpio" <(MTOOLS_SKIP_CHECK=1 mtype -i "$part" ::initrd.cpio) ;;
+  esac
+  assert_eq "$fs: --file leaves the outside unchanged" "$out_before" "$(outside_sum "$d")"
 done
+echo x >"$T/grub.cfg"
+assert_fails_with "--file cannot replace grub.cfg" "cannot replace grub.cfg" "$SCRIPTS/patch-oem.sh" --file "$T/grub.cfg" "$T/ext4.img" vultr
 
 echo "-- failures"
 make_disk "$T/noname.img" ext4 ROOT-X
