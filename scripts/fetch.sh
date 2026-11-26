@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Download the generic Flatcar image of a release and verify it.
+# Download an official Flatcar image of a release and verify it.
 #
-# usage: fetch.sh CHANNEL VERSION ARCH OUTDIR
+# usage: fetch.sh CHANNEL VERSION ARCH OUTDIR [SOURCE_IMAGE]
+#
+# SOURCE_IMAGE is the file name in the release directory: the generic
+# flatcar_production_image.bin.bz2 (the default) or a platform's own image such
+# as flatcar_production_oraclecloud_image.img.
 #
 # Verifies DIGESTS.asc against Flatcar's image signing key (pinned by
 # fingerprint in config/platforms.json), takes the SHA512 from the *signed*
 # text, then checks the image against it. A cached image that matches the
 # digest is not downloaded again.
 #
-# Writes OUTDIR/<channel>-<version>-<arch>.bin.bz2 and
-# OUTDIR/<channel>-<version>-<arch>.source.json, and prints the image path.
+# Writes OUTDIR/<channel>-<version>-<arch>.<extension> (.bin.bz2 for the generic
+# image, else .<SOURCE_IMAGE>) and <image>.source.json, and prints the image path.
 #
 # Test overrides: FLATCAR_RELEASE_BASE (see lib.sh), FLATCAR_SIGNING_KEY_FILE,
 # FLATCAR_SIGNING_KEY_FPR.
@@ -17,8 +21,9 @@ set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-[[ $# -eq 4 ]] || die "usage: fetch.sh CHANNEL VERSION ARCH OUTDIR"
-channel=$1 version=$2 arch=$3 outdir=$4
+[[ $# -eq 4 || $# -eq 5 ]] || die "usage: fetch.sh CHANNEL VERSION ARCH OUTDIR [SOURCE_IMAGE]"
+channel=$1 version=$2 arch=$3 outdir=$4 name=${5:-flatcar_production_image.bin.bz2}
+[[ $name =~ ^flatcar_production_[a-z0-9_]*image\.(bin\.bz2|img)$ ]] || die "invalid source image name: $name"
 valid_channel "$channel"; valid_version "$version"; valid_arch "$arch"
 need curl gpg jq sha512sum sha256sum awk
 
@@ -27,10 +32,13 @@ key_fpr=${FLATCAR_SIGNING_KEY_FPR:-$(jq -r .signing_key.fingerprint "$PLATFORMS_
 [[ $key_fpr =~ ^[0-9A-F]{40}$ ]] || die "bad pinned fingerprint: $key_fpr"
 
 base=$(release_url "$channel" "$arch" "$version")
-name=flatcar_production_image.bin.bz2
 mkdir -p "$outdir"
-img=$outdir/$channel-$version-$arch.bin.bz2
-meta=$outdir/$channel-$version-$arch.source.json
+if [[ $name == flatcar_production_image.bin.bz2 ]]; then
+  img=$outdir/$channel-$version-$arch.bin.bz2
+else
+  img=$outdir/$channel-$version-$arch.$name
+fi
+meta=$img.source.json
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

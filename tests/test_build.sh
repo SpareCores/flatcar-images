@@ -35,11 +35,24 @@ OUT=$T/out
 
 echo "-- fetch"
 assert_ok "fetch verifies and downloads" "$SCRIPTS/fetch.sh" stable 9999.0.1 amd64 "$T/f1"
-assert_eq "source.json records the digest" "$(sha512sum "$srv/stable/amd64-usr/9999.0.1/flatcar_production_image.bin.bz2" | cut -d' ' -f1)" "$(jq -r .sha512 "$T/f1/stable-9999.0.1-amd64.source.json")"
-assert_eq "source.json records the signer" "$fpr" "$(jq -r .signed_by "$T/f1/stable-9999.0.1-amd64.source.json")"
+assert_eq "source.json records the digest" "$(sha512sum "$srv/stable/amd64-usr/9999.0.1/flatcar_production_image.bin.bz2" | cut -d' ' -f1)" "$(jq -r .sha512 "$T/f1/stable-9999.0.1-amd64.bin.bz2.source.json")"
+assert_eq "source.json records the signer" "$fpr" "$(jq -r .signed_by "$T/f1/stable-9999.0.1-amd64.bin.bz2.source.json")"
 touch -d '2001-01-01' "$T/f1/stable-9999.0.1-amd64.bin.bz2"
 "$SCRIPTS/fetch.sh" stable 9999.0.1 amd64 "$T/f1" >/dev/null 2>&1
 assert_eq "cached image is not downloaded again" "2001" "$(date -r "$T/f1/stable-9999.0.1-amd64.bin.bz2" +%Y)"
+
+echo "-- fetch of a platform's own image (qcow2, signed like the generic one)"
+oci=flatcar_production_oraclecloud_image.img
+dir=$srv/stable/amd64-usr/9999.0.1
+qemu-img convert -f raw -O qcow2 "$T/base.img" "$dir/$oci"
+printf '# SHA512 HASH\n%s  %s\n' "$(sha512sum "$dir/$oci" | cut -d' ' -f1)" "$oci" >"$T/DIGESTS"
+gpg --batch --yes --local-user good@example.test --clearsign --output "$dir/$oci.DIGESTS.asc" "$T/DIGESTS"
+assert_eq "fetch prints the image path" "$T/f8/stable-9999.0.1-amd64.$oci" "$("$SCRIPTS/fetch.sh" stable 9999.0.1 amd64 "$T/f8" "$oci" 2>/dev/null)"
+assert_eq "its record has the digest of that file" "$(sha512sum "$dir/$oci" | cut -d' ' -f1)" "$(jq -r .sha512 "$T/f8/stable-9999.0.1-amd64.$oci.source.json")"
+assert_eq "its record has the URL of that file" "file://$dir/$oci" "$(jq -r .url "$T/f8/stable-9999.0.1-amd64.$oci.source.json")"
+assert_ok "the image is the qcow2 that was served" cmp "$dir/$oci" "$T/f8/stable-9999.0.1-amd64.$oci"
+assert_fails_with "a source image name with a path is rejected" "invalid source image name" "$SCRIPTS/fetch.sh" stable 9999.0.1 amd64 "$T/f9" ../flatcar_production_image.img
+assert_fails_with "so is any other file name" "invalid source image name" "$SCRIPTS/fetch.sh" stable 9999.0.1 amd64 "$T/f9" evil.sh
 
 echo "-- fetch refuses bad input"
 printf 'tampered' >>"$srv/stable/arm64-usr/9999.0.1/flatcar_production_image.bin.bz2"
@@ -84,7 +97,7 @@ assert_eq "manifest keys per artifact" "arch,channel,extension,format,name,oem_i
   "$(jq -r '.artifacts[0] | keys | join(",")' "$OUT/manifest.json")"
 assert_eq "manifest url" "https://github.com/SpareCores/flatcar-images/releases/download/stable-9999.0.1/flatcar-vultr-stable-9999.0.1-amd64.img.gz" \
   "$(jq -r '.artifacts[] | select(.vendor=="vultr") | .url' "$OUT/manifest.json")"
-assert_eq "manifest source digest" "$(jq -r .sha512 "$T/f1/stable-9999.0.1-amd64.source.json")" \
+assert_eq "manifest source digest" "$(jq -r .sha512 "$T/f1/stable-9999.0.1-amd64.bin.bz2.source.json")" \
   "$(jq -r '.artifacts[] | select(.vendor=="vultr") | .source_image.sha512' "$OUT/manifest.json")"
 assert_eq "manifest sha256 equals the file" "$(sha256sum <"$gz" | cut -d' ' -f1)" "$(jq -r '.artifacts[] | select(.vendor=="vultr") | .sha256' "$OUT/manifest.json")"
 assert_eq "revision tag" "stable-9999.0.1-r2" "$("$SCRIPTS/manifest.sh" "$OUT" stable 9999.0.1 r2 2>/dev/null; jq -r .tag "$OUT/manifest.json")"
