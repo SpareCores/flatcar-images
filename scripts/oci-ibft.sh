@@ -28,10 +28,12 @@ set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-# The firmware table reader and the network drivers of the machines that boot
-# from iSCSI: BM.Standard.E2 bnxt_en, the newer shapes mlx5_core, and virtio_net
-# for KVM guests (the boot test). The init loads them from /etc/ibft-modules.
-DRIVERS=(iscsi_ibft bnxt_en mlx5_core virtio_net)
+# The network drivers of the machines that boot from iSCSI: BM.Standard.E2
+# bnxt_en, the newer shapes mlx5_core, and virtio_net for QEMU guests (the boot
+# test), plus on amd64 the firmware table reader iscsi_ibft. Flatcar's arm64
+# kernel has no iscsi_ibft (CONFIG_ISCSI_IBFT is unset): the init reads the raw
+# ACPI table there. The init loads the modules from /etc/ibft-modules.
+DRIVERS=(bnxt_en mlx5_core virtio_net)
 # replacement_timeout in seconds: I/O queues this long when the session drops.
 REPLACEMENT_TIMEOUT=6000
 
@@ -54,23 +56,31 @@ read -r esp_start usr_start usr_size ssize < <(sfdisk --json "$image" | jq -r '
 
 # --- the kernel's embedded initramfs -----------------------------------------
 
+# is_arm64_image KERNEL: an arm64 Image ("ARM\x64" magic at offset 56), else a bzImage.
+is_arm64_image() { [[ $(od -An -tx1 -j 56 -N4 "$1" | tr -d ' ') == 41524d64 ]]; }
+
 # unpack_initramfs VMLINUZ DIR: unpack the xz-compressed cpio that the kernel
-# image embeds into DIR. The bzImage payload is the compressed vmlinux (offset
-# and length in the setup header); the initramfs is the xz stream inside it
-# that decompresses to a cpio archive.
+# image embeds into DIR. On amd64 the bzImage payload is the compressed vmlinux
+# (offset and length in the setup header); on arm64 the image is the plain,
+# uncompressed kernel ("ARM\x64" magic at offset 56). The initramfs is the xz
+# stream inside it that decompresses to a cpio archive.
 unpack_initramfs() {
   local bz=$1 dir=$2 sects off len start magic vmlinux=$tmp/vmlinux o offsets
-  sects=$(od -An -tu1 -j $((0x1f1)) -N1 "$bz" | tr -d ' ')
-  off=$(od -An -tu4 -j $((0x248)) -N4 "$bz" | tr -d ' ')
-  len=$(od -An -tu4 -j $((0x24c)) -N4 "$bz" | tr -d ' ')
-  start=$(( ((sects == 0 ? 4 : sects) + 1) * 512 + off ))
-  magic=$(od -An -tx1 -j "$start" -N4 "$bz" | tr -d ' ')
-  case $magic in
-    fd377a58) tail -c +$((start + 1)) "$bz" | head -c "$len" | xz -dc --single-stream >"$vmlinux" ;;
-    28b52ffd) need zstd; tail -c +$((start + 1)) "$bz" | head -c "$len" | zstd -dc >"$vmlinux" ;;
-    1f8b*) tail -c +$((start + 1)) "$bz" | head -c "$len" | gzip -dc >"$vmlinux" ;;
-    *) die "unknown kernel payload compression ($magic)" ;;
-  esac
+  if is_arm64_image "$bz"; then
+    vmlinux=$bz
+  else
+    sects=$(od -An -tu1 -j $((0x1f1)) -N1 "$bz" | tr -d ' ')
+    off=$(od -An -tu4 -j $((0x248)) -N4 "$bz" | tr -d ' ')
+    len=$(od -An -tu4 -j $((0x24c)) -N4 "$bz" | tr -d ' ')
+    start=$(( ((sects == 0 ? 4 : sects) + 1) * 512 + off ))
+    magic=$(od -An -tx1 -j "$start" -N4 "$bz" | tr -d ' ')
+    case $magic in
+      fd377a58) tail -c +$((start + 1)) "$bz" | head -c "$len" | xz -dc --single-stream >"$vmlinux" ;;
+      28b52ffd) need zstd; tail -c +$((start + 1)) "$bz" | head -c "$len" | zstd -dc >"$vmlinux" ;;
+      1f8b*) tail -c +$((start + 1)) "$bz" | head -c "$len" | gzip -dc >"$vmlinux" ;;
+      *) die "unknown kernel payload compression ($magic)" ;;
+    esac
+  fi
   mkdir "$dir"
   mapfile -t offsets < <(LC_ALL=C grep -obUaP '\xfd7zXZ\x00' "$vmlinux" | cut -d: -f1)
   for o in "${offsets[@]}"; do
@@ -87,6 +97,7 @@ unpack_initramfs() {
 esp=$image@@$((esp_start * ssize))
 MTOOLS_SKIP_CHECK=1 mcopy -i "$esp" ::flatcar/vmlinuz-a "$tmp/vmlinuz-a" 2>/dev/null || die "no flatcar/vmlinuz-a in the EFI-SYSTEM partition of $image"
 ird=$tmp/ird
+is_arm64_image "$tmp/vmlinuz-a" || DRIVERS=(iscsi_ibft "${DRIVERS[@]}")
 unpack_initramfs "$tmp/vmlinuz-a" "$ird"
 rm -f "$tmp/vmlinux"
 
@@ -139,12 +150,13 @@ usr_restore "$usr_dir" "$moddir/modules.dep" "$moddir/modules.builtin" "$moddir/
 
 # The modules of DRIVERS and their dependencies, from USR-A's modules.dep
 # (every line lists the complete dependency list of its module).
-mapfile -t wanted < <(awk -F': *' -v drivers="${DRIVERS[*]}" '
+wanted_list=$(awk -F': *' -v drivers="${DRIVERS[*]}" '
   BEGIN { n = split(drivers, d, " "); for (i = 1; i <= n; i++) want[d[i]] = 1 }
   { name = $1; sub(".*/", "", name); sub(/\.ko.*/, "", name); gsub("-", "_", name)
     if (name in want) { found[name] = 1; print $1; m = split($2, dep, " "); for (i = 1; i <= m; i++) print dep[i] } }
   END { for (k in want) if (!(k in found)) { print "missing " k > "/dev/stderr"; exit 1 } }' \
   "$usr_dir/$moddir/modules.dep" | sort -u) || die "a driver module is not in USR-A"
+mapfile -t wanted <<<"$wanted_list"
 
 # Modules the embedded initramfs has stay there; they must be USR-A's own
 # files, or the shared modules.* indexes could not be trusted.

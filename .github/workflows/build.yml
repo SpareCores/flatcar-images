@@ -102,8 +102,10 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
-  # An image with an initrd overlay is booted before it is released (QEMU/KVM,
-  # once on an iSCSI target and once on a plain disk: docs/oraclecloud-iscsi.md).
+  # An image with an initrd overlay is booted before it is released (QEMU, once
+  # on an iSCSI target and once on a plain disk: docs/oraclecloud-iscsi.md).
+  # amd64 under KVM; arm64 under TCG on the same x86 runner (see the
+  # boot-test-iscsi workflow for why).
   boot-test:
     needs: [plan, build]
     if: ${{ contains(fromJSON(needs.plan.outputs.matrix).include.*.vendor, 'oraclecloud-iscsi') }}
@@ -111,32 +113,44 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
     env:
       CHANNEL: ${{ inputs.channel }}
       VERSION: ${{ inputs.version }}
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: artifacts-oraclecloud-iscsi-amd64
+          name: artifacts-oraclecloud-iscsi-${{ matrix.arch }}
           path: ${{ runner.temp }}/artifact
-      - name: Install tools and make KVM usable
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends qemu-system-x86 qemu-utils ovmf liblzma-dev
+          if [[ $ARCH == amd64 ]]; then
+            sudo apt-get install --yes --no-install-recommends qemu-system-x86 qemu-utils ovmf liblzma-dev
+          else
+            sudo apt-get install --yes --no-install-recommends qemu-system-arm qemu-utils qemu-efi-aarch64 gcc-aarch64-linux-gnu liblzma-dev
+          fi
+      - name: Make KVM usable
+        if: ${{ matrix.arch == 'amd64' }}
+        run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Boot test
         run: |
           export WORKDIR="$RUNNER_TEMP/boot-test" CACHE_DIR="$RUNNER_TEMP/cache"
-          scripts/boot-test-iscsi.sh "$RUNNER_TEMP/artifact/flatcar-oraclecloud-iscsi-$CHANNEL-$VERSION-amd64.qcow2"
+          scripts/boot-test-iscsi.sh "$RUNNER_TEMP/artifact/flatcar-oraclecloud-iscsi-$CHANNEL-$VERSION-$ARCH.qcow2"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
-          name: boot-test-logs
+          name: boot-test-logs-${{ matrix.arch }}
           path: ${{ runner.temp }}/boot-test/*.log
           if-no-files-found: ignore
 

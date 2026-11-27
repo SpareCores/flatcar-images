@@ -16,11 +16,16 @@
 # console on both boots (it reboots once). Pass or fail is decided by grepping
 # the serial log: nothing is read from inside the guest.
 #
-# Needs /dev/kvm, qemu-system-x86_64, qemu-img, OVMF, docker, python3, git, make
-# and a C compiler (iPXE), and about 4 GiB of disk.
-# Env: WORKDIR (default ./work/boot-test; logs stay there), CACHE_DIR (iPXE build),
-# OVMF_CODE, OVMF_VARS (default: the Debian/Ubuntu ovmf package), BOOT_TIMEOUT
-# (seconds per mode, default 600).
+# amd64 needs /dev/kvm, qemu-system-x86_64, OVMF; arm64 (ARCH=arm64) needs
+# qemu-system-aarch64 and AAVMF, and runs under TCG (software emulation, no KVM:
+# the build host is usually another architecture), several times slower. Both
+# need qemu-img, docker, python3, git, make, a C compiler for iPXE (a cross
+# compiler, aarch64-linux-gnu-gcc, when the host is not arm64) and about 4 GiB
+# of disk.
+# Env: ARCH (amd64, the default, or arm64: the image's architecture), WORKDIR
+# (default ./work/boot-test; logs stay there), CACHE_DIR (iPXE build), FIRMWARE_CODE,
+# FIRMWARE_VARS (default: the Debian/Ubuntu ovmf or qemu-efi-aarch64 package),
+# BOOT_TIMEOUT (seconds per mode, default 600 on amd64, 2400 on arm64).
 set -euo pipefail
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -35,12 +40,28 @@ image=$(realpath "$1")
 modes=${2:-"iscsi vm"}
 [[ $modes == "iscsi vm" || $modes == iscsi || $modes == vm ]] || die "unknown mode: $modes"
 [[ -f $image ]] || die "no such image: $image"
-need qemu-system-x86_64 qemu-img docker python3 git make gcc jq curl ss
-[[ -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm is not usable"
-ovmf_code=${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}
-ovmf_vars=${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}
-[[ -f $ovmf_code && -f $ovmf_vars ]] || die "OVMF firmware not found (set OVMF_CODE and OVMF_VARS)"
-timeout_s=${BOOT_TIMEOUT:-600}
+arch=${ARCH:-amd64}
+case $arch in
+  amd64)
+    qemu=qemu-system-x86_64 ipxe_target=bin-x86_64-efi/ipxe.efi
+    firmware_code=${FIRMWARE_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}
+    firmware_vars=${FIRMWARE_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}
+    qemu_args=(-machine q35 -accel kvm -cpu host -smp 2 -m 2048)
+    default_timeout=600
+    ;;
+  arm64)
+    qemu=qemu-system-aarch64 ipxe_target=bin-arm64-efi/ipxe.efi
+    firmware_code=${FIRMWARE_CODE:-/usr/share/AAVMF/AAVMF_CODE.fd}
+    firmware_vars=${FIRMWARE_VARS:-/usr/share/AAVMF/AAVMF_VARS.fd}
+    qemu_args=(-machine virt -accel tcg -cpu max -smp 4 -m 4096)
+    default_timeout=2400
+    ;;
+  *) die "unknown ARCH: $arch (amd64 or arm64)" ;;
+esac
+need "$qemu" qemu-img docker python3 git make gcc jq curl ss
+[[ $arch == arm64 ]] || [[ -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm is not usable"
+[[ -f $firmware_code && -f $firmware_vars ]] || die "UEFI firmware not found (set FIRMWARE_CODE and FIRMWARE_VARS)"
+timeout_s=${BOOT_TIMEOUT:-$default_timeout}
 
 work=$(realpath -m "${WORKDIR:-$REPO_ROOT/work/boot-test}")
 cache=$(realpath -m "${CACHE_DIR:-$REPO_ROOT/cache}")
@@ -57,8 +78,9 @@ trap cleanup EXIT
 # --- iPXE: a pinned source tree, the iSCSI boot script embedded ---------------
 
 build_ipxe() {
-  local src=$cache/ipxe-$IPXE_COMMIT embed=$work/boot.ipxe
-  ipxe=$src/src/bin-x86_64-efi/ipxe.efi
+  local src=$cache/ipxe-$IPXE_COMMIT embed=$work/boot.ipxe cross=()
+  ipxe=$src/src/$ipxe_target
+  [[ $arch == arm64 && $(uname -m) != aarch64 ]] && cross=(CROSS=aarch64-linux-gnu-)
   # The script runs instead of iPXE's own autoboot, which would chain-load the
   # DHCP boot file (iPXE itself) again and again.
   printf '#!ipxe\ndhcp\nsanboot iscsi:169.254.169.2::%s:1:%s\n' "$TARGET_PORT" "$TARGET_IQN" >"$embed"
@@ -68,7 +90,7 @@ build_ipxe() {
   fi
   [[ $(git -C "$src" rev-parse HEAD) == "$IPXE_COMMIT" ]] || die "iPXE $IPXE_TAG is not commit $IPXE_COMMIT"
   log "building iPXE"
-  make -C "$src/src" -j"$(nproc)" bin-x86_64-efi/ipxe.efi EMBED="$embed" >"$work/ipxe-build.log" 2>&1 || {
+  make -C "$src/src" -j"$(nproc)" "$ipxe_target" "${cross[@]}" EMBED="$embed" >"$work/ipxe-build.log" 2>&1 || {
     tail -20 "$work/ipxe-build.log" >&2
     die "building iPXE failed"
   }
@@ -102,7 +124,7 @@ UNIT
 # run_qemu MODE LOG: start QEMU in the background (pid in qemu_pid).
 run_qemu() {
   local mode=$1 logfile=$2 netdev disk=()
-  cp "$ovmf_vars" "$work/vars-$mode.fd"
+  cp "$firmware_vars" "$work/vars-$mode.fd"
   netdev="user,id=n0,net=169.254.169.0/24,host=169.254.169.2,dhcpstart=169.254.169.15"
   netdev+=",guestfwd=tcp:169.254.169.254:80-cmd:python3 $tests_boot/metadata-server.py $work/config.ign"
   if [[ $mode == iscsi ]]; then
@@ -113,9 +135,9 @@ run_qemu() {
     disk=(-drive "file=$work/vm.raw,format=raw,if=none,id=disk0" -device "virtio-blk-pci,drive=disk0,bootindex=1")
   fi
   : >"$logfile"
-  qemu-system-x86_64 -machine q35 -accel kvm -cpu host -smp 2 -m 2048 \
-    -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" -drive "if=pflash,format=raw,file=$work/vars-$mode.fd" \
-    "${disk[@]}" -netdev "$netdev" -device virtio-net-pci,netdev=n0 \
+  "$qemu" "${qemu_args[@]}" \
+    -drive "if=pflash,format=raw,readonly=on,file=$firmware_code" -drive "if=pflash,format=raw,file=$work/vars-$mode.fd" \
+    "${disk[@]}" -netdev "$netdev" -device virtio-net-pci,netdev=n0,romfile= \
     -display none -serial "file:$logfile" -monitor none &
   qemu_pid=$!
 }
@@ -162,7 +184,12 @@ boot_test() {
   expect "both boots passed the same number of checks ($pass1, $pass2)" test "$pass1" -eq "$pass2" -a "$pass1" -gt 3
   expect "no I/O error in the serial log" bash -c '! grep -qE "I/O error|blk_update_request" '
   if [[ $mode == iscsi ]]; then
+    expect "the kernel found the iBFT ACPI table" grep -q 'ACPI: iBFT'
     expect "iBFT found by the early init" grep -q 'iBFT: found'
+    if [[ $arch == arm64 ]]; then
+      # The arm64 kernel has no iscsi_ibft: the init must have read the ACPI table.
+      expect "iBFT read from the raw ACPI table" grep -q 'iBFT: found (raw ACPI table)'
+    fi
     expect "iSCSI login gave a disk" grep -qE 'iBFT: block devices: sd'
     expect "dracut stage prepared" grep -q 'iBFT: prepared /realinit'
     expect "root on iSCSI" grep -q 'IBFTCHECK boot=1 INFO iSCSI root'

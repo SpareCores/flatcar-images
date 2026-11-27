@@ -22,11 +22,12 @@ needed=$({ readelf -d "$xz_bin"; readelf -d "$(readlink -f "$liblzma")"; } | sed
 
 u32le() { local i; for i in 0 8 16 24; do printf '%b' "$(printf '\\x%02x' $((($1 >> i) & 255)))"; done; }
 
-# make_image DISK INIT EMBEDDED_DUMMY: the synthetic disk. INIT is the embedded
-# minimal-init, EMBEDDED_DUMMY the content of the embedded dummy.ko (USR-A's is
-# the one in $mods).
+# make_image DISK INIT EMBEDDED_DUMMY [ARCH]: the synthetic disk. INIT is the
+# embedded minimal-init, EMBEDDED_DUMMY the content of the embedded dummy.ko
+# (USR-A's is the one in $mods). ARCH amd64 (default), arm64 (the kernel is a plain arm64 Image and
+# USR-A has no iscsi_ibft module) or amd64-noibft (an amd64 kernel, no iscsi_ibft).
 make_image() {
-  local disk=$1 init=$2 dummy=$3 d=$T/img.$RANDOM
+  local disk=$1 init=$2 dummy=$3 arch=${4:-amd64} d=$T/img.$RANDOM
   local ird=$d/ird usr=$d/usr kmod=lib/modules/$KV
   mkdir -p "$ird/usr/lib/modules/$KV/kernel/drivers/net" "$ird/usr/lib64" "$usr/bin" "$usr/lib64" "$usr/$kmod/kernel/drivers/net" "$usr/share/iscsi" "$usr/share/flatcar/etc/iscsi"
   cp "$init" "$ird/init"
@@ -35,13 +36,19 @@ make_image() {
   for f in dep dep.bin alias alias.bin softdep symbols symbols.bin builtin.bin builtin.alias.bin devname; do : >"$ird/usr/lib/modules/$KV/modules.$f"; done
   for so in $needed; do : >"$ird/usr/lib64/$so"; done
   (cd "$ird" && find . -mindepth 1 | sort | cpio -o -H newc --quiet) | xz -c --check=crc32 >"$d/ird.cpio.xz"
-  # The kernel image: a setup header that points at an xz payload (a "vmlinux"
-  # with a decoy xz stream, noise, and the initramfs stream).
-  { head -c 20000 /dev/urandom; echo decoy | xz -c; head -c 3000 /dev/urandom; cat "$d/ird.cpio.xz"; head -c 9000 /dev/urandom; } | xz -c >"$d/payload.xz"
-  head -c 2560 /dev/zero >"$d/bz"
-  u32le 0 | dd of="$d/bz" bs=1 seek=$((0x248)) conv=notrunc status=none
-  u32le "$(stat -c %s "$d/payload.xz")" | dd of="$d/bz" bs=1 seek=$((0x24c)) conv=notrunc status=none
-  cat "$d/payload.xz" >>"$d/bz"
+  # The kernel image. amd64: a setup header that points at an xz payload (a
+  # "vmlinux" with a decoy xz stream, noise, and the initramfs stream). arm64:
+  # the "ARM\x64" magic at offset 56 and the same "vmlinux" as the image itself.
+  { head -c 20000 /dev/urandom; echo decoy | xz -c; head -c 3000 /dev/urandom; cat "$d/ird.cpio.xz"; head -c 9000 /dev/urandom; } >"$d/vmlinux"
+  if [[ $arch == arm64 ]]; then
+    { head -c 56 /dev/zero; printf 'ARM\x64'; cat "$d/vmlinux"; } >"$d/bz"
+  else
+    xz -c "$d/vmlinux" >"$d/payload.xz"
+    head -c 2560 /dev/zero >"$d/bz"
+    u32le 0 | dd of="$d/bz" bs=1 seek=$((0x248)) conv=notrunc status=none
+    u32le "$(stat -c %s "$d/payload.xz")" | dd of="$d/bz" bs=1 seek=$((0x24c)) conv=notrunc status=none
+    cat "$d/payload.xz" >>"$d/bz"
+  fi
   truncate -s 16M "$d/esp.img"
   mkfs.vfat "$d/esp.img" >/dev/null
   MTOOLS_SKIP_CHECK=1 mmd -i "$d/esp.img" ::flatcar
@@ -51,12 +58,15 @@ make_image() {
   cp "$(readlink -f "$liblzma")" "$usr/lib64/liblzma.so.5.test"
   ln -s liblzma.so.5.test "$usr/lib64/liblzma.so.5"
   cp "$mods/dummy.ko" "$d/dummy.ko"
-  for pair in dummy:dummy nlmon:nlmon iscsi_ibft:ifb bnxt_en:macvlan mlx5_core:geneve virtio_net:dummy; do
+  local pairs="dummy:dummy nlmon:nlmon iscsi_ibft:ifb bnxt_en:macvlan mlx5_core:geneve virtio_net:dummy"
+  [[ $arch == amd64 ]] || pairs=${pairs/iscsi_ibft:ifb /}
+  for pair in $pairs; do
     xz -c "$mods/${pair#*:}.ko" >"$usr/$kmod/kernel/drivers/net/${pair%%:*}.ko.xz"
   done
   printf '%s\n' 'kernel/drivers/net/dummy.ko.xz:' 'kernel/drivers/net/nlmon.ko.xz:' \
-    'kernel/drivers/net/iscsi_ibft.ko.xz: kernel/drivers/net/dummy.ko.xz' 'kernel/drivers/net/bnxt_en.ko.xz:' \
+    'kernel/drivers/net/bnxt_en.ko.xz:' \
     'kernel/drivers/net/mlx5_core.ko.xz: kernel/drivers/net/nlmon.ko.xz' 'kernel/drivers/net/virtio_net.ko.xz:' >"$usr/$kmod/modules.dep"
+  [[ $arch == amd64 ]] && echo 'kernel/drivers/net/iscsi_ibft.ko.xz: kernel/drivers/net/dummy.ko.xz' >>"$usr/$kmod/modules.dep"
   : >"$usr/$kmod/modules.builtin"; : >"$usr/$kmod/modules.builtin.modinfo"; : >"$usr/$kmod/modules.order"
   printf '# header\nnode.session.timeo.replacement_timeout = 120\nnode.startup = automatic\n' >"$usr/share/flatcar/etc/iscsi/iscsid.conf"
   ln -s ../flatcar/etc/iscsi/iscsid.conf "$usr/share/iscsi/iscsid.conf"
@@ -133,4 +143,11 @@ make_disk "$T/other.img" btrfs
 assert_fails_with "a Flatcar-like disk without a kernel on the ESP" "no flatcar/vmlinuz-a" "$SCRIPTS/oci-ibft.sh" "$T/other.img" "$T/out6"
 sgdisk -d 1 "$T/good.img" >/dev/null
 assert_fails_with "a disk without an ESP" "no EFI-SYSTEM and USR-A" "$SCRIPTS/oci-ibft.sh" "$T/good.img" "$T/out7"
+echo "-- an arm64 image: a plain Image, and no iscsi_ibft in USR-A"
+make_image "$T/arm64.img" "$T/stock" "$mods/dummy.ko" arm64
+assert_ok "oci-ibft.sh succeeds" "$SCRIPTS/oci-ibft.sh" "$T/arm64.img" "$T/out-arm64"
+assert_eq "the drivers are the NIC drivers only" "bnxt_en mlx5_core virtio_net" "$(cpio -i --to-stdout --quiet etc/ibft-modules <"$T/out-arm64/flatcar-ibft.cpio" | paste -sd' ')"
+assert_eq "the parser of the raw ACPI table is in the initrd" "ibft-acpi-parse" "$(cpio -t --quiet <"$T/out-arm64/flatcar-ibft.cpio" | grep -o 'ibft-acpi-parse$')"
+make_image "$T/arm64-as-amd64.img" "$T/stock" "$mods/dummy.ko" amd64-noibft
+assert_fails_with "an amd64 image whose USR-A has no iscsi_ibft is refused" "a driver module is not in USR-A" "$SCRIPTS/oci-ibft.sh" "$T/arm64-as-amd64.img" "$T/out9"
 finish
