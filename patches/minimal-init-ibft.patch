@@ -1,6 +1,6 @@
 --- a/minimal-init
 +++ b/minimal-init
-@@ -56,6 +56,96 @@
+@@ -56,6 +56,134 @@
  # Required to access disks, but not autoloaded:
  /sbin/modprobe sd_mod
  
@@ -14,6 +14,7 @@
 +# its settings from /proc/cmdline in some places and /etc/cmdline.d in others;
 +# iscsi_ibft_prepare_realinit makes both stages see an iSCSI root.
 +ibft_found=
++ibft_raw=
 +# Log to the kernel log (and so to every console, dmesg and the journal): the
 +# early init's stderr goes to /dev/console only, which is the VGA console on
 +# most images.
@@ -41,18 +42,45 @@
 +  [ $(( $(ip_to_int "$1") & mask )) -ne $(( $(ip_to_int "$2") & mask )) ]
 +}
 +
++# ibft_table_get KEY: a value of the parsed ACPI table (ibft_table).
++ibft_table_get() {
++  echo "${ibft_table}" | sed -n "s/^IBFT_$1=//p"
++}
++
 +iscsi_ibft_login() {
 +  /sbin/modprobe iscsi_ibft 2>/dev/null || true
-+  if [ ! -d /sys/firmware/ibft ]; then
++  if [ -d /sys/firmware/ibft ]; then
++    ibft_initiator=$(ibft_get initiator/initiator-name)
++    ibft_mac=$(ibft_get ethernet0/mac | tr 'A-F' 'a-f')
++    ibft_ip=$(ibft_get ethernet0/ip-addr)
++    ibft_prefix=$(ibft_get ethernet0/prefix-len)
++    ibft_gw=$(ibft_get ethernet0/gateway)
++    ibft_target=$(ibft_get target0/ip-addr)
++    ibft_port=$(ibft_get target0/port)
++    ibft_lun=$(ibft_get target0/lun)
++    ibft_target_name=$(ibft_get target0/target-name)
++  elif [ -r /sys/firmware/acpi/tables/iBFT ]; then
++    # The kernel has no iscsi_ibft driver (Flatcar's arm64 kernel): read the
++    # ACPI table itself.
++    ibft_raw=1
++    if ! ibft_table=$(/usr/lib/ibft/ibft-acpi-parse /sys/firmware/acpi/tables/iBFT 2>&1); then
++      ibft_log "cannot read the ACPI table: ${ibft_table}"
++      return 0
++    fi
++    ibft_initiator=$(ibft_table_get INITIATOR)
++    ibft_mac=$(ibft_table_get MAC)
++    ibft_ip=$(ibft_table_get IP)
++    ibft_prefix=$(ibft_table_get PREFIX)
++    ibft_gw=$(ibft_table_get GATEWAY)
++    ibft_target=$(ibft_table_get TARGET_IP)
++    ibft_port=$(ibft_table_get TARGET_PORT)
++    ibft_lun=$(ibft_table_get TARGET_LUN)
++    ibft_target_name=$(ibft_table_get TARGET_NAME)
++  else
 +    return 0
 +  fi
 +  ibft_found=1
-+  ibft_mac=$(ibft_get ethernet0/mac | tr 'A-F' 'a-f')
-+  ibft_ip=$(ibft_get ethernet0/ip-addr)
-+  ibft_prefix=$(ibft_get ethernet0/prefix-len)
-+  ibft_gw=$(ibft_get ethernet0/gateway)
-+  ibft_target=$(ibft_get target0/ip-addr)
-+  ibft_log "found, NIC ${ibft_mac} ${ibft_ip}/${ibft_prefix} via ${ibft_gw}, target ${ibft_target} $(ibft_get target0/target-name)"
++  ibft_log "found${ibft_raw:+ (raw ACPI table)}, NIC ${ibft_mac} ${ibft_ip}/${ibft_prefix} via ${ibft_gw}, target ${ibft_target} ${ibft_target_name}"
 +  # /etc/ibft-modules lists the drivers this initrd adds (the NIC drivers).
 +  for m in iscsi_tcp $(cat /etc/ibft-modules); do
 +    /sbin/modprobe "$m" || ibft_log "modprobe $m failed"
@@ -69,7 +97,12 @@
 +  if [ -z "${ibft_dev}" ]; then
 +    ibft_log "no NIC with MAC ${ibft_mac}"
 +  fi
-+  iscsistart -N >&2 || ibft_log "iscsistart -N failed"
++  if [ -z "${ibft_raw}" ]; then
++    iscsistart -N >&2 || ibft_log "iscsistart -N failed"
++  elif [ -n "${ibft_dev}" ]; then
++    # iscsistart -N reads /sys/firmware/ibft: configure the NIC from the table.
++    ip link set dev "${ibft_dev}" up >&2 && ip addr add "${ibft_ip}/${ibft_prefix}" dev "${ibft_dev}" >&2 || ibft_log "ip addr failed"
++  fi
 +  # The target is often off-subnet (link-local): route it via the iBFT gateway.
 +  ibft_route_gw=
 +  if [ -n "${ibft_dev}" ] && [ -n "${ibft_gw}" ] && [ "${ibft_gw}" != 0.0.0.0 ] &&
@@ -84,7 +117,12 @@
 +  for d in nodes send_targets static isns ifaces fw; do mkdir -p "/var/lib/iscsi/$d"; done
 +  # A slow NIC (link-up) can make the first login fail: try up to three times.
 +  for try in 1 2 3; do
-+    iscsistart -b >&2 || ibft_log "iscsistart -b failed (try ${try})"
++    if [ -n "${ibft_raw}" ]; then
++      # -g (portal group tag) is required but not in the iBFT: iscsistart takes the target's own tag at login.
++      iscsistart -i "${ibft_initiator}" -t "${ibft_target_name}" -g 1 -a "${ibft_target}" -p "${ibft_port}" >&2 || ibft_log "iscsistart failed (try ${try})"
++    else
++      iscsistart -b >&2 || ibft_log "iscsistart -b failed (try ${try})"
++    fi
 +    for i in $(seq 10); do
 +      if ls /sys/class/block | grep -q '^sd'; then break 2; fi
 +      sleep 1
@@ -97,7 +135,7 @@
  debug_sh 2/4: before verity
  
  find_drive() {
-@@ -196,6 +286,45 @@
+@@ -196,6 +324,57 @@
    cp -a /oem/. /realinit/oem || cp -a /usr/share/oem/. /realinit/oem || true
    mv /usr.squashfs /realinit
  fi
@@ -109,7 +147,19 @@
 +  fi
 +  # dracut's getarg reads /etc/cmdline.d, so its iscsi module takes over the session.
 +  mkdir -p /realinit/etc/cmdline.d
-+  echo "rd.iscsi.firmware=1 rd.neednet=1 netroot=iscsi:" > /realinit/etc/cmdline.d/90-ibft.conf
++  echo "rd.iscsi.firmware=1 rd.neednet=1 netroot=iscsi:${ibft_raw:+ rd.iscsi.initiator=${ibft_initiator}}" > /realinit/etc/cmdline.d/90-ibft.conf
++  # What the table said, for the later stages (without iscsi_ibft there is no /sys/firmware/ibft).
++  {
++    echo "IBFT_INITIATOR=${ibft_initiator}"
++    echo "IBFT_MAC=${ibft_mac}"
++    echo "IBFT_IP=${ibft_ip}"
++    echo "IBFT_PREFIX=${ibft_prefix}"
++    echo "IBFT_GATEWAY=${ibft_gw}"
++    echo "IBFT_TARGET_IP=${ibft_target}"
++    echo "IBFT_TARGET_PORT=${ibft_port}"
++    echo "IBFT_TARGET_LUN=${ibft_lun}"
++    echo "IBFT_TARGET_NAME=${ibft_target_name}"
++  } > /realinit/etc/ibft.env
 +  # network-cleanup.service is conditional on netroot on /proc/cmdline, which has none:
 +  # it would flush the address that carries the root disk at switch-root.
 +  mkdir -p /realinit/etc/systemd/system/initrd.target.wants

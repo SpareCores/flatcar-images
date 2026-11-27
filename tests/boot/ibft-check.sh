@@ -35,15 +35,33 @@ rootio() {
     rm -f /var/ibft-check-io
 }
 
-if [[ -d /sys/firmware/ibft ]]; then
-  say "INFO iSCSI root, device $root_src"
-  iqn=$(</sys/firmware/ibft/initiator/initiator-name)
-  mac=$(</sys/firmware/ibft/ethernet0/mac)
+# env_get KEY: a value the early init saved from the iBFT (/etc/ibft.env).
+env_get() { sed -n "s/^IBFT_$1=//p" /etc/ibft.env 2>/dev/null; }
+
+if [[ -d /sys/firmware/ibft || -f /etc/ibft.env ]]; then
+  say "INFO iSCSI root, device $root_src, iBFT $([[ -d /sys/firmware/ibft ]] && echo sysfs || echo "raw ACPI table only")"
+  # The iBFT's own values: the sysfs tree when the kernel has iscsi_ibft, else
+  # (arm64) the file the early init wrote from the raw ACPI table.
+  if [[ -d /sys/firmware/ibft ]]; then
+    iqn=$(</sys/firmware/ibft/initiator/initiator-name)
+    mac=$(</sys/firmware/ibft/ethernet0/mac)
+    if [[ -f /etc/ibft.env ]]; then
+      check ibft-env-matches-sysfs bash -c "[[ \$(sed -n 's/^IBFT_INITIATOR=//p' /etc/ibft.env) == '$iqn' && \$(sed -n 's/^IBFT_MAC=//p' /etc/ibft.env) == '${mac,,}' ]]"
+    fi
+  else
+    iqn=$(env_get INITIATOR)
+    mac=$(env_get MAC)
+    check no-iscsi-ibft-module test ! -e /sys/module/iscsi_ibft
+    check ibft-acpi-table test -s /sys/firmware/acpi/tables/iBFT
+  fi
   dev=$(grep -l -i -x "$mac" /sys/class/net/*/address | cut -d/ -f5)
 
   check root-on-iscsi-session grep -q /session <<<"$root_sys"
   check iscsid-active wait_for systemctl is-active --quiet iscsid
   check iscsid-enabled-not-iscsi-service bash -c '[[ -L /etc/systemd/system/multi-user.target.wants/iscsid.service && ! -e /etc/systemd/system/multi-user.target.wants/iscsi.service ]]'
+  # dracut takes the early init's session over: no second login, no logout.
+  # shellcheck disable=SC2016
+  check one-iscsi-session bash -c '[[ $(ls /sys/class/iscsi_session | wc -l) -eq 1 ]]'
   check session-logged-in wait_for grep -qx LOGGED_IN /sys/class/iscsi_session/session1/state
   check session-initiator-is-ibft grep -qx "$iqn" /sys/class/iscsi_session/session1/initiatorname
   check initiatorname-file grep -qx "InitiatorName=$iqn" /etc/iscsi/initiatorname.iscsi

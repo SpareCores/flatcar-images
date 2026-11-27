@@ -3,11 +3,14 @@
 # arithmetic it uses, and ibft-root-setup. The recipe (oci-ibft.sh) and the
 # whole boot are checked by scripts/boot-test-iscsi.sh, which needs KVM.
 source "$(dirname "$0")/lib.sh"
-require_tools patch sh
+require_tools patch sh hexdump awk od
 
 # shellcheck disable=SC2153
 PATCH=$ROOT/patches/minimal-init-ibft.patch
 SETUP=$ROOT/overlay/usr/lib/ibft/ibft-root-setup
+PARSE=$ROOT/overlay/usr/lib/ibft/ibft-acpi-parse
+# The iBFT table iPXE published in the arm64 boot test (QEMU, scripts/boot-test-iscsi.sh).
+TABLE=$ROOT/tests/fixtures/ibft-ipxe.bin
 
 echo "-- minimal-init patch"
 make_stock_init "$T/stock"
@@ -76,4 +79,54 @@ assert_eq "enabling is idempotent" "/usr/lib/systemd/system/iscsid.service" "$(r
 assert_fails_with "no initiator name in the iBFT fails" "no initiator name" run_setup
 rm "$ibft/initiator/initiator-name"
 assert_fails "no iBFT fails" run_setup
+
+echo "-- ibft-root-setup without /sys/firmware/ibft (arm64): the initiator name comes from ibft.env"
+rm -rf "$root/etc/iscsi/initiatorname.iscsi" "$root/etc/ibft.env"
+printf 'IBFT_INITIATOR=iqn.2010-04.org.ipxe:from-env\nIBFT_MAC=00:11:22:33:44:55\n' >"$initrd/ibft.env"
+assert_ok "runs" run_setup
+assert_eq "initiator name is the one of ibft.env" "InitiatorName=iqn.2010-04.org.ipxe:from-env" "$(cat "$root/etc/iscsi/initiatorname.iscsi")"
+assert_eq "ibft.env is handed to the real root" "$(cat "$initrd/ibft.env")" "$(cat "$root/etc/ibft.env")"
+rm "$initrd/ibft.env"
+rm "$root/etc/iscsi/initiatorname.iscsi"
+printf 'IBFT_MAC=00:11:22:33:44:55\n' >"$initrd/ibft.env"
+assert_fails_with "an ibft.env without initiator fails" "no initiator name" run_setup
+
+echo "-- ibft-acpi-parse"
+parse() { sh "$PARSE" "$@"; }
+assert_eq "the table iPXE publishes" "IBFT_INITIATOR=iqn.2010-04.org.ipxe:00000000-0000-0000-0000-000000000000
+IBFT_MAC=52:54:00:12:34:56
+IBFT_IP=169.254.169.15
+IBFT_PREFIX=24
+IBFT_GATEWAY=169.254.169.2
+IBFT_TARGET_IP=169.254.169.2
+IBFT_TARGET_PORT=3260
+IBFT_TARGET_LUN=1
+IBFT_TARGET_NAME=iqn.2024-01.org.sparecores.flatcar-images:boot-test" "$(parse "$TABLE")"
+# patch_table OUT OFFSET HEXBYTE...: a copy of the table with bytes replaced and the checksum (byte 9) fixed.
+patch_table() {
+  local out=$1 off=$2 b sum
+  cp "$TABLE" "$out"
+  shift 2
+  for b in "$@"; do printf %b "\\x$b" | dd of="$out" bs=1 seek="$off" conv=notrunc status=none; off=$((off + 1)); done
+  printf '\x00' | dd of="$out" bs=1 seek=9 conv=notrunc status=none
+  sum=$(od -An -v -tu1 "$out" | tr -s ' ' '\n' | awk 'NF { s += $1 } END { print s % 256 }')
+  printf %b "\\x$(printf %02x $(((256 - sum) % 256)))" | dd of="$out" bs=1 seek=9 conv=notrunc status=none
+}
+patch_table "$T/prefix.bin" $((0xb6)) 14
+assert_eq "the NIC's prefix length is read from the NIC structure" "IBFT_PREFIX=20" "$(parse "$T/prefix.bin" | grep PREFIX)"
+patch_table "$T/port.bin" $((0x196)) 40 1f
+assert_eq "the target port is little endian" "IBFT_TARGET_PORT=8000" "$(parse "$T/port.bin" | grep PORT)"
+cp "$TABLE" "$T/badsum.bin"
+printf '\x55' | dd of="$T/badsum.bin" bs=1 seek=100 conv=notrunc status=none
+assert_fails_with "a bad checksum is refused" "bad checksum" parse "$T/badsum.bin"
+head -c 300 "$TABLE" >"$T/short.bin"
+assert_fails_with "a truncated table is refused" "bad table length" parse "$T/short.bin"
+cp "$TABLE" "$T/sig.bin"; printf x | dd of="$T/sig.bin" bs=1 conv=notrunc status=none
+assert_fails_with "a wrong signature is refused" "no iBFT signature" parse "$T/sig.bin"
+patch_table "$T/v6.bin" $((0xb0)) 20  # the NIC's address is no longer ::ffff:a.b.c.d
+assert_fails_with "an address that is not IPv4 is refused" "not an IPv4 address" parse "$T/v6.bin"
+patch_table "$T/name.bin" $((0x23c)) 24  # a "$(" in the target name
+assert_fails_with "a name with shell characters is refused" "unexpected characters" parse "$T/name.bin"
+patch_table "$T/noblock.bin" $((0x185)) 00  # the target block is not valid
+assert_fails_with "a table without a valid target is refused" "no target structure" parse "$T/noblock.bin"
 finish
