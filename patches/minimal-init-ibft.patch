@@ -1,6 +1,6 @@
 --- a/minimal-init
 +++ b/minimal-init
-@@ -56,6 +56,134 @@
+@@ -56,6 +56,139 @@
  # Required to access disks, but not autoloaded:
  /sbin/modprobe sd_mod
  
@@ -57,7 +57,6 @@
 +    ibft_gw=$(ibft_get ethernet0/gateway)
 +    ibft_target=$(ibft_get target0/ip-addr)
 +    ibft_port=$(ibft_get target0/port)
-+    ibft_lun=$(ibft_get target0/lun)
 +    ibft_target_name=$(ibft_get target0/target-name)
 +  elif [ -r /sys/firmware/acpi/tables/iBFT ]; then
 +    # The kernel has no iscsi_ibft driver (Flatcar's arm64 kernel): read the
@@ -74,7 +73,6 @@
 +    ibft_gw=$(ibft_table_get GATEWAY)
 +    ibft_target=$(ibft_table_get TARGET_IP)
 +    ibft_port=$(ibft_table_get TARGET_PORT)
-+    ibft_lun=$(ibft_table_get TARGET_LUN)
 +    ibft_target_name=$(ibft_table_get TARGET_NAME)
 +  else
 +    return 0
@@ -116,10 +114,17 @@
 +  mkdir -p /var/lib/iscsi /run/lock/iscsi
 +  for d in nodes send_targets static isns ifaces fw; do mkdir -p "/var/lib/iscsi/$d"; done
 +  # A slow NIC (link-up) can make the first login fail: try up to three times.
++  ibft_tpgt=1
 +  for try in 1 2 3; do
 +    if [ -n "${ibft_raw}" ]; then
-+      # -g (portal group tag) is required but not in the iBFT: iscsistart takes the target's own tag at login.
-+      iscsistart -i "${ibft_initiator}" -t "${ibft_target_name}" -g 1 -a "${ibft_target}" -p "${ibft_port}" >&2 || ibft_log "iscsistart failed (try ${try})"
++      # -g, the portal group tag, is required but not in the iBFT. The iscsistart of
++      # Flatcar 4757 accepts a wrong one (it logs "Portal group tag mismatch ... Updating");
++      # should another version fail the login with "expected 1, received N", retry with N.
++      ibft_out=$(iscsistart -i "${ibft_initiator}" -t "${ibft_target_name}" -g "${ibft_tpgt}" -a "${ibft_target}" -p "${ibft_port}" 2>&1) || {
++        ibft_log "iscsistart failed (try ${try}, -g ${ibft_tpgt}): ${ibft_out}"
++        ibft_seen=$(echo "${ibft_out}" | sed -n 's/.*received \([0-9][0-9]*\).*/\1/p' | tail -n 1)
++        ibft_tpgt=${ibft_seen:-${ibft_tpgt}}
++      }
 +    else
 +      iscsistart -b >&2 || ibft_log "iscsistart -b failed (try ${try})"
 +    fi
@@ -135,7 +140,7 @@
  debug_sh 2/4: before verity
  
  find_drive() {
-@@ -196,6 +324,57 @@
+@@ -196,6 +329,56 @@
    cp -a /oem/. /realinit/oem || cp -a /usr/share/oem/. /realinit/oem || true
    mv /usr.squashfs /realinit
  fi
@@ -157,7 +162,6 @@
 +    echo "IBFT_GATEWAY=${ibft_gw}"
 +    echo "IBFT_TARGET_IP=${ibft_target}"
 +    echo "IBFT_TARGET_PORT=${ibft_port}"
-+    echo "IBFT_TARGET_LUN=${ibft_lun}"
 +    echo "IBFT_TARGET_NAME=${ibft_target_name}"
 +  } > /realinit/etc/ibft.env
 +  # network-cleanup.service is conditional on netroot on /proc/cmdline, which has none:

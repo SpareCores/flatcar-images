@@ -142,7 +142,7 @@ GitHub workflows: `pr.yml` (lint and tests), `track-releases.yml` (daily: reads 
 
 ## Develop
 
-Needs `bash`, `jq`, `curl`, `git`, `gpg`, `bzip2`, `gzip`, GNU `tar`, `sfdisk` and `sgdisk` (`gdisk`), `btrfs-progs` (6.1 or later, for the block group tree), `fakeroot`, `e2fsprogs`, `qemu-img`, and `mtools` and `dosfstools` for the FAT tests; `cpio`, `kmod`, `patch` and `binutils` for the oraclecloud-iscsi build. `shellcheck` and `actionlint` for `make lint`. The boot test needs QEMU, docker, a C compiler and `make` (it builds iPXE), and for amd64 `/dev/kvm` and OVMF; for arm64 (`ARCH=arm64`) `qemu-system-aarch64`, AAVMF (`qemu-efi-aarch64`) and, on a non-arm64 host, `gcc-aarch64-linux-gnu`.
+Needs `bash`, `jq`, `curl`, `git`, `gpg`, `bzip2`, `gzip`, GNU `tar`, `sfdisk` and `sgdisk` (`gdisk`), `btrfs-progs` (6.1 or later, for the block group tree), `fakeroot`, `e2fsprogs`, `qemu-img`, and `mtools` and `dosfstools` for the FAT tests; `cpio`, `kmod`, `patch` and `binutils` for the oraclecloud-iscsi build, `busybox` for its parser test. `shellcheck` and `actionlint` for `make lint`. The boot test needs QEMU, docker, a C compiler and `make` (it builds iPXE), and for amd64 `/dev/kvm` and OVMF; for arm64 (`ARCH=arm64`) `qemu-system-aarch64`, AAVMF (`qemu-efi-aarch64`) and, on a non-arm64 host, `gcc-aarch64-linux-gnu`.
 
 ```sh
 make lint

@@ -88,7 +88,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends btrfs-progs fakeroot mtools dosfstools e2fsprogs gdisk qemu-utils cpio kmod patch binutils xz-utils
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends btrfs-progs fakeroot mtools dosfstools e2fsprogs gdisk qemu-utils cpio kmod patch binutils xz-utils busybox
       - name: Test
         run: make test
       - name: Build

@@ -7,7 +7,7 @@
 # usage: ibft-acpi-parse TABLE
 #
 # Output: IBFT_INITIATOR, IBFT_MAC (lower case), IBFT_IP, IBFT_PREFIX,
-# IBFT_GATEWAY, IBFT_TARGET_IP, IBFT_TARGET_PORT, IBFT_TARGET_LUN, IBFT_TARGET_NAME.
+# IBFT_GATEWAY, IBFT_TARGET_IP, IBFT_TARGET_PORT, IBFT_TARGET_NAME.
 # The values are checked to hold only characters of names and addresses, so the
 # output is safe to read back with sed or to source.
 #
@@ -18,7 +18,8 @@
 # id, version, length (2 bytes), index, flags (bit 0: block valid); ids are
 # 1 control, 2 initiator, 3 NIC, 4 target. Strings sit elsewhere in the table,
 # at an offset from its start. Addresses are 16 bytes, IPv4 as ::ffff:a.b.c.d.
-# The first valid target is used, and the NIC it names (else the first valid NIC).
+# A valid target with the "firmware boot selected" flag (bit 1) is used, else the
+# first valid one, and the NIC it names (else the first valid NIC). VLAN is ignored.
 set -eu
 [ $# -eq 1 ] && [ -r "$1" ] || { echo "usage: ibft-acpi-parse TABLE" >&2; exit 2; }
 
@@ -41,11 +42,14 @@ function str(off, len,   s, i) {
   if (s !~ /^[A-Za-z0-9._:@-]+$/) fail("unexpected characters in a name")
   return s
 }
-# The structure of the given id at offset o, if it is there and valid, else 0.
-function block(o, id) {
-  if (o == 0 || o + 6 > size || b[o] != id || o + u16(o + 2) > size) return 0
+# The structure of the given id at offset o, if it is there, at least minlen
+# bytes long (the spec'"'"'s length of that structure) and valid, else 0.
+function block(o, id, minlen) {
+  if (o == 0 || o + 6 > size || b[o] != id || u16(o + 2) < minlen || o + u16(o + 2) > size) return 0
   return b[o + 5] % 2 == 1 ? o : 0
 }
+# The structure at o has the "firmware boot selected" flag.
+function selected(o) { return int(b[o + 5] / 2) % 2 == 1 }
 { for (i = 1; i <= NF; i++) b[n++] = $i }
 END {
   if (n < 48 || b[0] != 105 || b[1] != 66 || b[2] != 70 || b[3] != 84) fail("no iBFT signature")
@@ -56,17 +60,20 @@ END {
   if (sum % 256 != 0) fail("bad checksum")
   c = 48
   if (b[c] != 1) fail("no control structure")
-  initiator_at = block(u16(c + 8), 2)
+  initiator_at = block(u16(c + 8), 2, 74)
   if (!initiator_at) fail("no initiator structure")
-  target_at = block(u16(c + 12), 4)
-  if (!target_at) target_at = block(u16(c + 16), 4)
+  tgt[0] = block(u16(c + 12), 4, 54)
+  tgt[1] = block(u16(c + 16), 4, 54)
+  target_at = tgt[0] ? tgt[0] : tgt[1]
+  if (tgt[0] && tgt[1] && !selected(tgt[0]) && selected(tgt[1])) target_at = tgt[1]
   if (!target_at) fail("no target structure")
-  nic[0] = block(u16(c + 10), 3)
-  nic[1] = block(u16(c + 14), 3)
+  nic[0] = block(u16(c + 10), 3, 102)
+  nic[1] = block(u16(c + 14), 3, 102)
   if (!nic[0] && !nic[1]) fail("no NIC structure")
   t = target_at
   c = nic[0] ? nic[0] : nic[1]
   if (nic[0] && nic[1] && b[nic[1] + 4] == b[t + 33]) c = nic[1]
+  if (b[c + 22] < 1 || b[c + 22] > 32) fail("bad prefix length")
   i = initiator_at
   print "IBFT_INITIATOR=" str(u16(i + 72), u16(i + 70))
   printf "IBFT_MAC=%02x:%02x:%02x:%02x:%02x:%02x\n", b[c + 90], b[c + 91], b[c + 92], b[c + 93], b[c + 94], b[c + 95]
@@ -75,6 +82,5 @@ END {
   print "IBFT_GATEWAY=" ip4(c + 24)
   print "IBFT_TARGET_IP=" ip4(t + 6)
   print "IBFT_TARGET_PORT=" u16(t + 22)
-  print "IBFT_TARGET_LUN=" b[t + 24] * 256 + b[t + 25]
   print "IBFT_TARGET_NAME=" str(u16(t + 36), u16(t + 34))
 }'
