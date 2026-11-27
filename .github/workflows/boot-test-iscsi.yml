@@ -2,8 +2,16 @@ name: boot-test-iscsi
 
 run-name: boot test oraclecloud-iscsi ${{ inputs.channel }} ${{ inputs.version }}
 
-# Build the oraclecloud-iscsi image of one release and boot it in QEMU/KVM, once
-# from an iSCSI target and once from a plain disk (docs/oraclecloud-iscsi.md).
+# Build the oraclecloud-iscsi image of one release and boot it in QEMU, once
+# from an iSCSI target and once from a plain disk (docs/oraclecloud-iscsi.md),
+# for amd64 (KVM) and arm64.
+#
+# arm64 runs under TCG (software emulation) on the x86 runner, not on
+# ubuntu-24.04-arm: as far as GitHub documents, its arm64 hosted runners have no
+# nested virtualization (no usable /dev/kvm; not checked here), so a native
+# runner would emulate too and gain nothing. Switch the matrix entry to the arm
+# runner, which makes the cross compiler unnecessary, if /dev/kvm turns up there
+# (the script would then need -accel kvm for an arm64 host).
 # Runs on pull requests that touch what the image is made of, and by hand.
 # Nothing is released: build.yml boots the image it releases the same way.
 
@@ -48,7 +56,12 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
     env:
+      ARCH: ${{ matrix.arch }}
       # Pull requests use a fixed release: the check is about the recipe, not the release.
       CHANNEL: ${{ inputs.channel || 'stable' }}
       VERSION: ${{ inputs.version || '4757.2.3' }}
@@ -56,24 +69,32 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install tools and make KVM usable
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends btrfs-progs fakeroot mtools dosfstools e2fsprogs gdisk qemu-utils cpio kmod patch binutils xz-utils qemu-system-x86 ovmf liblzma-dev
+          sudo apt-get install --yes --no-install-recommends btrfs-progs fakeroot mtools dosfstools e2fsprogs gdisk qemu-utils cpio kmod patch binutils xz-utils busybox liblzma-dev
+          if [[ $ARCH == amd64 ]]; then
+            sudo apt-get install --yes --no-install-recommends qemu-system-x86 ovmf
+          else
+            sudo apt-get install --yes --no-install-recommends qemu-system-arm qemu-efi-aarch64 gcc-aarch64-linux-gnu
+          fi
+      - name: Make KVM usable
+        if: ${{ matrix.arch == 'amd64' }}
+        run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Build the image
         run: |
           export WORKDIR="$RUNNER_TEMP/work" CACHE_DIR="$RUNNER_TEMP/cache"
-          scripts/build.sh "$CHANNEL" "$VERSION" amd64 oraclecloud-iscsi "$RUNNER_TEMP/out"
+          scripts/build.sh "$CHANNEL" "$VERSION" "$ARCH" oraclecloud-iscsi "$RUNNER_TEMP/out"
       - name: Boot test
         run: |
           export WORKDIR="$RUNNER_TEMP/boot-test" CACHE_DIR="$RUNNER_TEMP/cache"
-          scripts/boot-test-iscsi.sh "$RUNNER_TEMP/out/flatcar-oraclecloud-iscsi-$CHANNEL-$VERSION-amd64.qcow2"
+          scripts/boot-test-iscsi.sh "$RUNNER_TEMP/out/flatcar-oraclecloud-iscsi-$CHANNEL-$VERSION-$ARCH.qcow2"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
-          name: boot-test-logs
+          name: boot-test-logs-${{ matrix.arch }}
           path: ${{ runner.temp }}/boot-test/*.log
           if-no-files-found: ignore

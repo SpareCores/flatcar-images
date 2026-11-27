@@ -33,14 +33,14 @@ assert_eq "every artifact name matches the convention" "" "$bad"
 # Plan 22: UpCloud skips LTS, aliyun has both arches. gce (arm64) is built by
 # build-gce-arm64.yml from a kernel fork, so it is not in the build.yml matrix.
 assert_eq "stable matrix" \
-  "aliyun/amd64 aliyun/arm64 oraclecloud-iscsi/amd64 upcloud/amd64 vultr/amd64" \
+  "aliyun/amd64 aliyun/arm64 oraclecloud-iscsi/amd64 oraclecloud-iscsi/arm64 upcloud/amd64 vultr/amd64" \
   "$("$SCRIPTS/matrix.sh" stable | jq -r '[.include[] | "\(.vendor)/\(.arch)"] | sort | join(" ")')"
 assert_eq "lts matrix has no upcloud and no oraclecloud-iscsi" \
   "aliyun/amd64 aliyun/arm64 vultr/amd64" \
   "$("$SCRIPTS/matrix.sh" lts | jq -r '[.include[] | "\(.vendor)/\(.arch)"] | sort | join(" ")')"
 assert_eq "vendor filter" "vultr/amd64" \
   "$("$SCRIPTS/matrix.sh" stable vultr | jq -r '[.include[] | "\(.vendor)/\(.arch)"] | join(" ")')"
-assert_eq "oraclecloud-iscsi is selectable by name (a dash in the platform name)" "oraclecloud-iscsi/amd64" \
+assert_eq "oraclecloud-iscsi is selectable by name (a dash in the platform name)" "oraclecloud-iscsi/amd64 oraclecloud-iscsi/arm64" \
   "$("$SCRIPTS/matrix.sh" stable oraclecloud-iscsi | jq -r '[.include[] | "\(.vendor)/\(.arch)"] | join(" ")')"
 assert_fails "gce is not in the matrix even when asked for" "$SCRIPTS/matrix.sh" stable gce
 assert_eq "gce is marked as built by its own workflow" "build-gce-arm64.yml" "$(jq -r .platforms.gce.built_by "$P")"
@@ -50,7 +50,6 @@ assert_fails "bad channel is rejected" "$SCRIPTS/matrix.sh" "stable;x"
 assert_fails_with "build refuses upcloud on lts" "Ignition" "$SCRIPTS/build.sh" lts 4081.3.12 amd64 upcloud "$T/o"
 assert_fails_with "build refuses vultr arm64" "not built for arm64" "$SCRIPTS/build.sh" stable 4757.2.3 arm64 vultr "$T/o"
 assert_fails_with "build refuses oraclecloud-iscsi on lts" "minimal-init" "$SCRIPTS/build.sh" lts 4081.3.12 amd64 oraclecloud-iscsi "$T/o"
-assert_fails_with "build refuses oraclecloud-iscsi arm64" "not built for arm64" "$SCRIPTS/build.sh" stable 4757.2.3 arm64 oraclecloud-iscsi "$T/o"
 
 # oraclecloud-iscsi: the official oraclecloud image plus the iBFT overlay (docs/oraclecloud-iscsi.md).
 O=oraclecloud-iscsi

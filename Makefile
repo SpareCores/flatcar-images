@@ -2,7 +2,7 @@ SHELL := /bin/bash
 SCRIPTS := $(wildcard scripts/*.sh)
 TESTS := $(wildcard tests/*.sh tests/boot/*.sh)
 # Shell scripts that run in the image (initrd) rather than in the build.
-IMAGE_SCRIPTS := overlay/usr/lib/ibft/ibft-root-setup
+IMAGE_SCRIPTS := overlay/usr/lib/ibft/ibft-root-setup overlay/usr/lib/ibft/ibft-acpi-parse
 
 .PHONY: lint test build clean help
 

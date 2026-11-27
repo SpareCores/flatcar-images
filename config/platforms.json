@@ -36,7 +36,7 @@
     },
     "oraclecloud-iscsi": {
       "oem_id": "oraclecloud",
-      "arches": ["amd64"],
+      "arches": ["amd64", "arm64"],
       "skip_channels": ["lts"],
       "skip_reason": "the LTS release has no minimal-init in its initramfs (Flatcar added it in 2025-09), so the iSCSI login patch has nothing to apply to",
       "source_image": "flatcar_production_oraclecloud_image.img",
