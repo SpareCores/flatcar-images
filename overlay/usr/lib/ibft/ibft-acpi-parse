@@ -21,7 +21,10 @@
 # A valid target with the "firmware boot selected" flag (bit 1) is used, else the
 # first valid one, and the NIC it names (else the first valid NIC). VLAN is ignored.
 set -eu
-[ $# -eq 1 ] && [ -r "$1" ] || { echo "usage: ibft-acpi-parse TABLE" >&2; exit 2; }
+if [ $# -ne 1 ] || [ ! -r "$1" ]; then
+    echo "usage: ibft-acpi-parse TABLE" >&2
+    exit 2
+fi
 
 hexdump -v -e '16/1 "%u " "\n"' "$1" | awk '
 function fail(msg) { print "ibft-acpi-parse: " msg > "/dev/stderr"; exit 1 }
